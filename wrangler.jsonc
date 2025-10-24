@@ -4,7 +4,7 @@
  */
  {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "vibesdk-production",
+	"name": "vibesdk-ashish",
 	"main": "worker/index.ts",
 	"compatibility_date": "2025-08-10",
 	"compatibility_flags": ["nodejs_compat"],
@@ -61,12 +61,12 @@
 			"image": "./SandboxDockerfile",
             // "image": "registry.cloudflare.com/vibesdk-production-userappsandboxservice:cfe197fc",
             // Altering max_instances value will have no effect. Please use the MAX_SANDBOX_INSTANCES var instead.
-			"max_instances": 1400,
+			"max_instances": 2900,
             // ATTENTION: Altering instance_type value will have no effect. Please use the SANDBOX_INSTANCE_TYPE var instead.
             "instance_type": {
                 "vcpu": 4,
-                "memory_mib": 8192,
-                "disk_mb": 10240
+                "memory_mib": 4096,
+                "disk_mb": 6144
             },
             "rollout_step_percentage": 100
 		}
@@ -75,7 +75,7 @@
 		{
 			"binding": "DB",
 			"database_name": "vibesdk-db",
-			"database_id": "c4721a2b-b96a-428a-8b2a-b3d255b307e9",
+			"database_id": "1522b7a3-7c12-42a2-8140-ab87cf3d35e0",
 			"migrations_dir": "migrations",
 			"remote": true
 		}
@@ -110,7 +110,7 @@
     "kv_namespaces": [
         {
             "binding": "VibecoderStore",
-            "id": "f066f3c2e4824981b48e8586c04db9c1",
+            "id": "5d784e3c9dc148c8877d25c2ad89a21d",
             "remote": true
         }
     ],
@@ -151,14 +151,14 @@
     ],
 	"vars": {
         "TEMPLATES_REPOSITORY": "https://github.com/cloudflare/vibesdk-templates",
-        "ALLOWED_EMAIL": "",
+        "ALLOWED_EMAIL": "ashishkmr472@gmail.com",
         "DISPATCH_NAMESPACE": "vibesdk-default-namespace",
         "ENABLE_READ_REPLICAS": "true",
         "CLOUDFLARE_AI_GATEWAY": "vibesdk-gateway",
-        "CUSTOM_DOMAIN": "",
+        "CUSTOM_DOMAIN": "vibesdk.ashishkumarsingh.com",
         "MAX_SANDBOX_INSTANCES": "10",
         "SANDBOX_INSTANCE_TYPE": "standard-3",
-        "USE_CLOUDFLARE_IMAGES": ""
+        "USE_CLOUDFLARE_IMAGES": false,
     },
 	"workers_dev": false,
 	"preview_urls": false
