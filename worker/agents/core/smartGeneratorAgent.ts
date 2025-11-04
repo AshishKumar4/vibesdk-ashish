@@ -41,6 +41,10 @@ export class SmartCodeGeneratorAgent extends BaseProjectAgent<CodeGenState | Wor
         return this.activeAgent.getTemplateDetails();
     }
 
+    ensureTemplateDetails(): Promise<TemplateDetails> {
+        return this.activeAgent.ensureTemplateDetails();
+    }
+
     getOperationOptions() {
         return this.activeAgent.getOperationOptions();
     }

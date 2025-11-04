@@ -5,7 +5,7 @@ import { BaseProjectState } from './state';
 import { FileManager } from '../services/implementations/FileManager';
 import { StateManager } from '../services/implementations/StateManager';
 import { DeploymentManager } from '../services/implementations/DeploymentManager';
-import { TemplateDetails, PreviewType, StaticAnalysisResponse, RuntimeError, ExecuteCommandsResponse } from '../../services/sandbox/sandboxTypes';
+import { TemplateDetails, PreviewType, StaticAnalysisResponse, RuntimeError, ExecuteCommandsResponse, GitHubPushRequest } from '../../services/sandbox/sandboxTypes';
 import { FileOutputType, FileConceptType } from '../schemas';
 import { BaseSandboxService } from '../../services/sandbox/BaseSandboxService';
 import { broadcastToConnections } from './websocket';
@@ -13,7 +13,7 @@ import { WebSocketMessageResponses } from '../constants';
 import { WebSocketMessageType, WebSocketMessageData } from '../../api/websocketTypes';
 import { AppService } from '../../database';
 import { ProcessedImageAttachment } from '../../types/image-attachment';
-import { DeepDebugResult } from './types';
+import { AgentSummary, DeepDebugResult } from './types';
 import { RenderToolCall } from '../operations/UserConversationProcessor';
 import { PREVIEW_EXPIRED_ERROR } from '../constants';
 import { DeepCodeDebugger } from '../assistants/codeDebugger';
@@ -25,6 +25,7 @@ import { validateAndCleanBootstrapCommands } from '../utils/common';
 import { ConversationMessage, ConversationState } from '../inferutils/common';
 import { InferenceContext } from '../inferutils/config.types';
 import { IBaseAgent } from '../services/interfaces/IBaseAgent';
+import { GitHubExportResult, GitHubService } from 'worker/services/github';
 
 const DEFAULT_CONVERSATION_SESSION_ID = 'default';
 /**
@@ -61,6 +62,7 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     } | null = null;
     // In-memory storage for user-uploaded images (not persisted in DO state)
     protected pendingUserImages: ProcessedImageAttachment[] = []
+    protected previewUrlCache: string = '';
     
     constructor(ctx: AgentContext, env: Env) {
         super(ctx, env);
@@ -74,6 +76,14 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         
         // Initialize core managers
         this.initializeManagers();
+    }
+    
+    async getFullState(): Promise<TState> {
+        return this.state;
+    }
+    
+    getPreviewUrlCache() {
+        return this.previewUrlCache;
     }
     
     /**
@@ -198,6 +208,15 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         }
         this.setConversationState(conversationState);
     }
+    
+    getSummary(): Promise<AgentSummary> {
+        const summaryData = {
+            query: this.state.query,
+            generatedCode: this.fileManager.getGeneratedFiles(),
+            conversation: this.state.conversationMessages,
+        };
+        return Promise.resolve(summaryData);
+    }
 
     // === Abstract Methods (must implement in subclasses) ===
     
@@ -211,6 +230,8 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
      * App agent caches this, workflow agent may return a synthesized template
      */
     abstract getTemplateDetails(): TemplateDetails | null;
+
+    abstract ensureTemplateDetails(): Promise<TemplateDetails>;
     
     // === Shared Logger ===
     
@@ -306,6 +327,37 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         }
     }
     
+    /**
+     * Export git objects
+     * The route handler will build the repo with template rebasing
+     */
+    async exportGitObjects(): Promise<{
+        gitObjects: Array<{ path: string; data: Uint8Array }>;
+        query: string;
+        hasCommits: boolean;
+        templateDetails: TemplateDetails | null;
+    }> {
+        try {
+            // Export git objects efficiently (minimal DO memory usage)
+            const gitObjects = this.git.fs.exportGitObjects();
+
+            await this.gitInit();
+            
+            // Ensure template details are available
+            await this.ensureTemplateDetails();
+            
+            return {
+                gitObjects,
+                query: this.state.query || 'N/A',
+                hasCommits: gitObjects.length > 0,
+                templateDetails: this.getTemplateDetails()
+            };
+        } catch (error) {
+            this.logger().error('exportGitObjects failed', error);
+            throw error;
+        }
+    }
+
     // === GitHub Operations ===
 
     /**
@@ -352,6 +404,149 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         this.logger().info('GitHub token cleared');
     }
 
+    /**
+     * Export generated code to a GitHub repository
+     */
+    async pushToGitHub(options: GitHubPushRequest): Promise<GitHubExportResult> {
+        try {
+            this.logger().info('Starting GitHub export using DO git');
+
+            // Broadcast export started
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_STARTED, {
+                message: `Starting GitHub export to repository "${options.cloneUrl}"`,
+                repositoryName: options.repositoryHtmlUrl,
+                isPrivate: options.isPrivate
+            });
+
+            // Export git objects from DO
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
+                message: 'Preparing git repository...',
+                step: 'preparing',
+                progress: 20
+            });
+
+            const { gitObjects, query, templateDetails } = await this.exportGitObjects();
+            
+            this.logger().info('Git objects exported', {
+                objectCount: gitObjects.length,
+                hasTemplate: !!templateDetails
+            });
+
+            // Get app createdAt timestamp for template base commit
+            let appCreatedAt: Date | undefined = undefined;
+            try {
+                const appId = this.getAgentId();
+                if (appId) {
+                    const appService = new AppService(this.env);
+                    const app = await appService.getAppDetails(appId);
+                    if (app && app.createdAt) {
+                        appCreatedAt = new Date(app.createdAt);
+                        this.logger().info('Using app createdAt for template base', {
+                            createdAt: appCreatedAt.toISOString()
+                        });
+                    }
+                }
+            } catch (error) {
+                this.logger().warn('Failed to get app createdAt, using current time', { error });
+                appCreatedAt = new Date(); // Fallback to current time
+            }
+
+            // Push to GitHub using new service
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
+                message: 'Uploading to GitHub repository...',
+                step: 'uploading_files',
+                progress: 40
+            });
+
+            const result = await GitHubService.exportToGitHub({
+                gitObjects,
+                templateDetails,
+                appQuery: query,
+                appCreatedAt,
+                token: options.token,
+                repositoryUrl: options.repositoryHtmlUrl,
+                username: options.username,
+                email: options.email
+            });
+
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to export to GitHub');
+            }
+
+            this.logger().info('GitHub export completed', { 
+                commitSha: result.commitSha
+            });
+
+            // Cache token for subsequent exports
+            if (options.token && options.username) {
+                try {
+                    this.setGitHubToken(options.token, options.username);
+                    this.logger().info('GitHub token cached after successful export');
+                } catch (cacheError) {
+                    // Non-fatal - continue with finalization
+                    this.logger().warn('Failed to cache GitHub token', { error: cacheError });
+                }
+            }
+
+            // Update database
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
+                message: 'Finalizing GitHub export...',
+                step: 'finalizing',
+                progress: 90
+            });
+
+            const agentId = this.getAgentId();
+            this.logger().info('[DB Update] Updating app with GitHub repository URL', {
+                agentId,
+                repositoryUrl: options.repositoryHtmlUrl,
+                visibility: options.isPrivate ? 'private' : 'public'
+            });
+
+            const appService = new AppService(this.env);
+            const updateResult = await appService.updateGitHubRepository(
+                agentId || '',
+                options.repositoryHtmlUrl || '',
+                options.isPrivate ? 'private' : 'public'
+            );
+
+            this.logger().info('[DB Update] Database update result', {
+                agentId,
+                success: updateResult,
+                repositoryUrl: options.repositoryHtmlUrl
+            });
+
+            // Broadcast success
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_COMPLETED, {
+                message: `Successfully exported to GitHub repository: ${options.repositoryHtmlUrl}`,
+                repositoryUrl: options.repositoryHtmlUrl,
+                cloneUrl: options.cloneUrl,
+                commitSha: result.commitSha
+            });
+
+            this.logger().info('GitHub export completed successfully', { 
+                repositoryUrl: options.repositoryHtmlUrl,
+                commitSha: result.commitSha
+            });
+            
+            return { 
+                success: true, 
+                repositoryUrl: options.repositoryHtmlUrl,
+                cloneUrl: options.cloneUrl
+            };
+
+        } catch (error) {
+            this.logger().error('GitHub export failed', error);
+            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_ERROR, {
+                message: `GitHub export failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+                error: error instanceof Error ? error.message : 'Unknown error'
+            });
+            return { 
+                success: false, 
+                repositoryUrl: options.repositoryHtmlUrl,
+                cloneUrl: options.cloneUrl 
+            };
+        }
+    }
     // === Deep Debugging Operations ===
 
     isDeepDebugging(): boolean {

@@ -7,6 +7,7 @@ import { createQueueRequestTool } from './toolkit/queue-request';
 import { createGetLogsTool } from './toolkit/get-logs';
 import { createDeployPreviewTool } from './toolkit/deploy-preview';
 import { CodingAgentInterface } from 'worker/agents/services/implementations/CodingAgent';
+import { AppBuilderAgentInterface } from 'worker/agents/services/implementations/AppBuilderAgent';
 import { createDeepDebuggerTool } from "./toolkit/deep-debugger";
 import { createRenameProjectTool } from './toolkit/rename-project';
 import { createAlterBlueprintTool } from './toolkit/alter-blueprint';
@@ -42,7 +43,7 @@ export function buildTools(
     toolRenderer: RenderToolCall,
     streamCb: (chunk: string) => void,
 ): ToolDefinition<any, any>[] {
-    return [
+    const baseTools: ToolDefinition<any, any>[] = [
         toolWebSearchDefinition,
         toolFeedbackDefinition,
         createQueueRequestTool(agent, logger),
@@ -51,27 +52,41 @@ export function buildTools(
         createWaitForGenerationTool(agent, logger),
         createWaitForDebugTool(agent, logger),
         createRenameProjectTool(agent, logger),
-        createAlterBlueprintTool(agent, logger),
         // Git tool (safe version - no reset for user conversations)
         createGitTool(agent, logger, { excludeCommands: ['reset'] }),
         // Deep autonomous debugging assistant tool
         createDeepDebuggerTool(agent, logger, toolRenderer, streamCb),
     ];
+    
+    // Add app-specific tools only for app agents
+    if (agent instanceof AppBuilderAgentInterface) {
+        baseTools.push(
+            createAlterBlueprintTool(agent, logger),
+        );
+    }
+    
+    return baseTools;
 }
 
 export function buildDebugTools(session: DebugSession, logger: StructuredLogger, toolRenderer?: RenderToolCall): ToolDefinition<any, any>[] {
-  const tools = [
+  const tools: ToolDefinition<any, any>[] = [
     createGetLogsTool(session.agent, logger),
     createGetRuntimeErrorsTool(session.agent, logger),
     createReadFilesTool(session.agent, logger),
     createRunAnalysisTool(session.agent, logger),
     createExecCommandsTool(session.agent, logger),
-    createRegenerateFileTool(session.agent, logger),
     createGenerateFilesTool(session.agent, logger),
     createDeployPreviewTool(session.agent, logger),
     createWaitTool(logger),
     createGitTool(session.agent, logger),
   ];
+  
+  // Add app-specific debug tools only for app agents
+  if (session.agent instanceof AppBuilderAgentInterface) {
+    tools.push(
+      createRegenerateFileTool(session.agent, logger),
+    );
+  }
 
   // Attach tool renderer for UI visualization if provided
   if (toolRenderer) {

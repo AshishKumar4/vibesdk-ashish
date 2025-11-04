@@ -68,6 +68,10 @@ export class SimpleWorkflowGeneratorAgent extends BaseProjectAgent<WorkflowGenSt
         }
         return this.templateDetailsCache;
     }
+
+    async ensureTemplateDetails(): Promise<TemplateDetails> {
+        return this.getTemplateDetails();
+    }
     
     /**
      * Regenerate template when workflow code changes
