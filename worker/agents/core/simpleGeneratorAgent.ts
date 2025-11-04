@@ -392,10 +392,6 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         this.logger().info(`Agent initialized successfully for agent ${this.state.inferenceContext.agentId}`);
     }
 
-    getPreviewUrlCache() {
-        return this.previewUrlCache;
-    }
-
     getProjectSetupAssistant(): ProjectSetupAssistant {
         if (this.projectSetupAssistant === undefined) {
             this.projectSetupAssistant = new ProjectSetupAssistant({

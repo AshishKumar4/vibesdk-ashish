@@ -162,6 +162,18 @@ export const apps = sqliteTable('apps', {
     githubRepositoryUrl: text('github_repository_url'), // GitHub repository URL
     githubRepositoryVisibility: text('github_repository_visibility', { enum: ['public', 'private'] }), // Repository visibility
     
+    // Project Type (App vs Workflow)
+    projectType: text('project_type', { 
+        enum: ['app', 'workflow'] 
+    }).default('app').notNull(),
+    
+    deploymentTarget: text('deployment_target', { 
+        enum: ['platform', 'self-hosted'] 
+    }).default('platform').notNull(),
+    
+    // Workflow-specific metadata (JSON field)
+    workflowMetadata: text('workflow_metadata', { mode: 'json' }),
+    
     // App Metadata
     isArchived: integer('is_archived', { mode: 'boolean' }).default(false),
     isFeatured: integer('is_featured', { mode: 'boolean' }).default(false), // Featured by admins
@@ -190,6 +202,9 @@ export const apps = sqliteTable('apps', {
     visibilityStatusIdx: index('apps_visibility_status_idx').on(table.visibility, table.status),
     createdAtIdx: index('apps_created_at_idx').on(table.createdAt),
     updatedAtIdx: index('apps_updated_at_idx').on(table.updatedAt),
+    // Workflow support indexes
+    projectTypeIdx: index('apps_project_type_idx').on(table.projectType),
+    deploymentTargetIdx: index('apps_deployment_target_idx').on(table.deploymentTarget),
 }));
 
 /**
