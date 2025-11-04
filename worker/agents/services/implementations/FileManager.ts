@@ -3,17 +3,18 @@ import { IFileManager } from '../interfaces/IFileManager';
 import { IStateManager } from '../interfaces/IStateManager';
 import { FileOutputType } from '../../schemas';
 import { FileProcessing } from '../../domain/pure/FileProcessing';
-import { FileState } from 'worker/agents/core/state';
+import { FileState, BaseProjectState } from 'worker/agents/core/state';
 import { TemplateDetails } from '../../../services/sandbox/sandboxTypes';
 import { GitVersionControl } from 'worker/agents/git';
 
 /**
  * Manages file operations for code generation
  * Handles both template and generated files
+ * Works with any state that extends BaseProjectState (has generatedFilesMap)
  */
 export class FileManager implements IFileManager {
     constructor(
-        private stateManager: IStateManager,
+        private stateManager: IStateManager<BaseProjectState>,
         private getTemplateDetailsFunc: () => TemplateDetails,
         private git: GitVersionControl
     ) {

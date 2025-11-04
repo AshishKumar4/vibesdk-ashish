@@ -1,5 +1,6 @@
 import { StructuredLogger } from "../../logger";
-import { GenerationContext } from "../domain/values/GenerationContext";
+import { PhasicGenerationContext } from "../domain/values/GenerationContext";
+import { BaseProjectContext } from "../domain/values/BaseProjectContext";
 import { Message } from "../inferutils/common";
 import { InferenceContext } from "../inferutils/config.types";
 import { createUserMessage, createSystemMessage, createAssistantMessage } from "../inferutils/common";
@@ -9,7 +10,7 @@ import { CodingAgentInterface } from "../services/implementations/CodingAgent";
 
 export function getSystemPromptWithProjectContext(
     systemPrompt: string,
-    context: GenerationContext,
+    context: PhasicGenerationContext,
     serializerType: CodeSerializerType = CodeSerializerType.SIMPLE
 ): Message[] {
     const { query, blueprint, templateDetails, dependencies, allFiles, commandsHistory } = context;
@@ -35,14 +36,22 @@ export function getSystemPromptWithProjectContext(
     return messages;
 }
 
-export interface OperationOptions {
+/**
+ * Base operation options - generic over context and agent interface types
+ */
+export interface BaseOperationOptions<TContext = BaseProjectContext, TAgent = any> {
     env: Env;
     agentId: string;
-    context: GenerationContext;
+    context: TContext;
     logger: StructuredLogger;
     inferenceContext: InferenceContext;
-    agent: CodingAgentInterface;
+    agent: TAgent;
 }
+
+/**
+ * App-specific operation options
+ */
+export type OperationOptions = BaseOperationOptions<PhasicGenerationContext, CodingAgentInterface>;
 
 export abstract class AgentOperation<InputType, OutputType> {
     abstract execute(

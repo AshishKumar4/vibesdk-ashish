@@ -1,25 +1,25 @@
 import { IStateManager } from '../interfaces/IStateManager';
-import { CodeGenState } from '../../core/state';
+import { CodeGenState, BaseProjectState } from '../../core/state';
 
 /**
  * State manager implementation for Durable Objects
- * Works with the Agent's state management
+ * Generic over TState
  */
-export class StateManager implements IStateManager {
+export class StateManager<TState extends BaseProjectState = CodeGenState> implements IStateManager<TState> {
     constructor(
-        private getStateFunc: () => CodeGenState,
-        private setStateFunc: (state: CodeGenState) => void
+        private getStateFunc: () => TState,
+        private setStateFunc: (state: TState) => void
     ) {}
 
-    getState(): Readonly<CodeGenState> {
+    getState(): Readonly<TState> {
         return this.getStateFunc();
     }
 
-    setState(newState: CodeGenState): void {
+    setState(newState: TState): void {
         this.setStateFunc(newState);
     }
 
-    updateField<K extends keyof CodeGenState>(field: K, value: CodeGenState[K]): void {
+    updateField<K extends keyof TState>(field: K, value: TState[K]): void {
         const currentState = this.getState();
         this.setState({
             ...currentState,
@@ -27,7 +27,7 @@ export class StateManager implements IStateManager {
         });
     }
 
-    batchUpdate(updates: Partial<CodeGenState>): void {
+    batchUpdate(updates: Partial<TState>): void {
         const currentState = this.getState();
         this.setState({
             ...currentState,

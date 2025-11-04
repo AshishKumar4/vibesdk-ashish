@@ -1,27 +1,27 @@
-import { CodeGenState } from '../../core/state';
+import { CodeGenState, BaseProjectState } from '../../core/state';
 
 /**
  * Interface for state management
  * Abstracts state persistence and updates
  */
-export interface IStateManager {
+export interface IStateManager<TState extends BaseProjectState = CodeGenState> {
     /**
      * Get current state
      */
-    getState(): Readonly<CodeGenState>;
+    getState(): Readonly<TState>;
 
     /**
      * Update state immutably
      */
-    setState(newState: CodeGenState): void;
+    setState(newState: TState): void;
 
     /**
      * Update specific field
      */
-    updateField<K extends keyof CodeGenState>(field: K, value: CodeGenState[K]): void;
+    updateField<K extends keyof TState>(field: K, value: TState[K]): void;
 
     /**
      * Batch update multiple fields
      */
-    batchUpdate(updates: Partial<CodeGenState>): void;
+    batchUpdate(updates: Partial<TState>): void;
 }
