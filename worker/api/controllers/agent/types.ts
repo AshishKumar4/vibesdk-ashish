@@ -6,7 +6,8 @@ export interface CodeGenArgs {
     language?: string;
     frameworks?: string[];
     selectedTemplate?: string;
-    agentMode: 'deterministic' | 'smart';
+    agentMode?: 'deterministic' | 'smart';
+    projectType?: 'app' | 'workflow';
     images?: ImageAttachment[];
 }
 

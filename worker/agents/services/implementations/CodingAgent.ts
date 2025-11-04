@@ -1,115 +1,104 @@
 import { ProcessedImageAttachment } from "worker/types/image-attachment";
-import { Blueprint, FileConceptType } from "worker/agents/schemas";
+import { FileConceptType } from "worker/agents/schemas";
 import { ExecuteCommandsResponse, StaticAnalysisResponse, RuntimeError } from "worker/services/sandbox/sandboxTypes";
-import { ICodingAgent } from "../interfaces/ICodingAgent";
-import { OperationOptions } from "worker/agents/operations/common";
+import { IBaseAgent } from "../interfaces/IBaseAgent";
+import { BaseOperationOptions } from "worker/agents/operations/common";
 import { DeepDebugResult } from "worker/agents/core/types";
 import { RenderToolCall } from "worker/agents/operations/UserConversationProcessor";
 import { WebSocketMessageResponses } from "worker/agents/constants";
 
-/*
-* CodingAgentInterface - stub for passing to tool calls
-*/
+/**
+ * CodingAgentInterface - Generic wrapper for base agent tool calls
+ * Works with any agent implementing IBaseAgent (workflows, etc.)
+ * For app-specific agents, use AppBuilderAgentInterface instead
+ */
 export class CodingAgentInterface {
-    agentStub: ICodingAgent;
-    constructor (agentStub: ICodingAgent) {
-        this.agentStub = agentStub;
+    protected agent: IBaseAgent;
+    
+    constructor(agent: IBaseAgent) {
+        this.agent = agent;
     }
 
     getLogs(reset?: boolean, durationSeconds?: number): Promise<string> {
-        return this.agentStub.getLogs(reset, durationSeconds);
+        return this.agent.getLogs(reset, durationSeconds);
     }
 
     fetchRuntimeErrors(clear?: boolean): Promise<RuntimeError[]> {
-        return this.agentStub.fetchRuntimeErrors(clear);
+        return this.agent.fetchRuntimeErrors(clear);
     }
 
     async deployPreview(clearLogs: boolean = true, forceRedeploy: boolean = false): Promise<string> {
-        const response = await this.agentStub.deployToSandbox([], forceRedeploy, undefined, clearLogs);
-        // Send a message to refresh the preview
+        const response = await this.agent.deployToSandbox([], forceRedeploy, undefined, clearLogs);
         if (response && response.previewURL) {
-            this.agentStub.broadcast(WebSocketMessageResponses.PREVIEW_FORCE_REFRESH, {});
+            this.agent.broadcast(WebSocketMessageResponses.PREVIEW_FORCE_REFRESH, {});
             return `Deployment successful: ${response.previewURL}`;
-        } else {
-            return `Failed to deploy: ${response?.tunnelURL}`;
         }
+        return `Failed to deploy: ${response?.tunnelURL}`;
     }
 
     async deployToCloudflare(): Promise<string> {
-        const response = await this.agentStub.deployToCloudflare();
+        const response = await this.agent.deployToCloudflare();
         if (response && response.deploymentUrl) {
             return `Deployment successful: ${response.deploymentUrl}`;
-        } else {
-            return `Failed to deploy: ${response?.workersUrl}`;
         }
+        return `Failed to deploy: ${response?.workersUrl}`;
     }
 
     queueRequest(request: string, images?: ProcessedImageAttachment[]): void {
-        this.agentStub.queueUserRequest(request, images);
+        this.agent.queueUserRequest(request, images);
     }
 
     clearConversation(): void {
-        this.agentStub.clearConversation();
+        this.agent.clearConversation();
     }
 
-    getOperationOptions(): OperationOptions {
-        return this.agentStub.getOperationOptions();
+    getOperationOptions(): BaseOperationOptions {
+        return this.agent.getOperationOptions();
     }
 
     getGit() {
-        return this.agentStub.getGit();
+        return this.agent.getGit();
     }
 
     updateProjectName(newName: string): Promise<boolean> {
-        return this.agentStub.updateProjectName(newName);
+        return this.agent.updateProjectName(newName);
     }
 
-    updateBlueprint(patch: Partial<Blueprint>): Promise<Blueprint> {
-        return this.agentStub.updateBlueprint(patch);
-    }
-
-    // Generic debugging helpers — delegate to underlying agent
     readFiles(paths: string[]): Promise<{ files: { path: string; content: string }[] }> {
-        return this.agentStub.readFiles(paths);
+        return this.agent.readFiles(paths);
     }
 
     runStaticAnalysisCode(files?: string[]): Promise<StaticAnalysisResponse> {
-        return this.agentStub.runStaticAnalysisCode(files);
+        return this.agent.runStaticAnalysisCode(files);
     }
 
     execCommands(commands: string[], shouldSave: boolean, timeout?: number): Promise<ExecuteCommandsResponse> {
-        return this.agentStub.execCommands(commands, shouldSave, timeout);
+        return this.agent.execCommands(commands, shouldSave, timeout);
     }
 
-    // Exposes a simplified regenerate API for tools
-    regenerateFile(path: string, issues: string[]): Promise<{ path: string; diff: string }> {
-        return this.agentStub.regenerateFileByPath(path, issues);
-    }
-
-    // Exposes file generation via phase implementation
     generateFiles(
         phaseName: string,
         phaseDescription: string,
         requirements: string[],
         files: FileConceptType[]
     ): Promise<{ files: Array<{ path: string; purpose: string; diff: string }> }> {
-        return this.agentStub.generateFiles(phaseName, phaseDescription, requirements, files);
+        return this.agent.generateFiles(phaseName, phaseDescription, requirements, files);
     }
 
     isCodeGenerating(): boolean {
-        return this.agentStub.isCodeGenerating();
+        return this.agent.isCodeGenerating();
     }
 
     waitForGeneration(): Promise<void> {
-        return this.agentStub.waitForGeneration();
+        return this.agent.waitForGeneration();
     }
 
     isDeepDebugging(): boolean {
-        return this.agentStub.isDeepDebugging();
+        return this.agent.isDeepDebugging();
     }
 
     waitForDeepDebug(): Promise<void> {
-        return this.agentStub.waitForDeepDebug();
+        return this.agent.waitForDeepDebug();
     }
 
     executeDeepDebug(
@@ -118,6 +107,6 @@ export class CodingAgentInterface {
         streamCb: (chunk: string) => void,
         focusPaths?: string[]
     ): Promise<DeepDebugResult> {
-        return this.agentStub.executeDeepDebug(issue, toolRenderer, streamCb, focusPaths);
+        return this.agent.executeDeepDebug(issue, toolRenderer, streamCb, focusPaths);
     }
 }

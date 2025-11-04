@@ -1,11 +1,12 @@
-import { ICodingAgent } from './ICodingAgent';
+import { IBaseAgent } from './IBaseAgent';
 import { Blueprint } from '../../schemas';
 import { OperationOptions } from '../../operations/common';
 
 /**
- * IAppBuilderAgent - App-specific extensions to ICoding Agent
+ * IAppBuilderAgent - App-specific agent interface
+ * Extends IBaseAgent with app-specific methods (blueprint, file regeneration)
  */
-export abstract class IAppBuilderAgent extends ICodingAgent {
+export abstract class IAppBuilderAgent extends IBaseAgent {
     /**
      * Update project blueprint
      */

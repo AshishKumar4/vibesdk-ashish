@@ -16,7 +16,7 @@ import { GitHubExportResult } from '../../services/github/types';
 >>>>>>> 24e7f26 (refactor: split monolithic coding agent for easier extensibility)
 import { GitHubService } from '../../services/github/GitHubService';
 import { CodeGenState, CurrentDevState, MAX_PHASES } from './state';
-import { AllIssues, AgentSummary, AgentInitArgs, PhaseExecutionResult, UserContext } from './types';
+import { AllIssues, AgentSummary, AppAgentInitArgs, PhaseExecutionResult, UserContext } from './types';
 import { WebSocketMessageResponses } from '../constants';
 import { ProjectSetupAssistant } from '../assistants/projectsetup';
 import { UserConversationProcessor } from '../operations/UserConversationProcessor';
@@ -51,6 +51,8 @@ import { IdGenerator } from '../utils/idGenerator';
 import { PhasicGenerationContext } from '../domain/values/GenerationContext';
 import { BaseProjectAgent } from './baseProjectAgent';
 import { handleWebSocketClose, handleWebSocketMessage, sendToConnection } from './websocket';
+import { IAppBuilderAgent } from '../services/interfaces/IAppBuilderAgent';
+import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
 
 interface Operations {
     regenerateFile: FileRegenerationOperation;
@@ -70,11 +72,11 @@ interface Operations {
  * - Code validation and error correction
  * - Deployment to sandbox service
  */
-export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> {
+export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> implements IAppBuilderAgent {
     private static readonly PROJECT_NAME_PREFIX_MAX_LENGTH = 20;
 
     protected projectSetupAssistant: ProjectSetupAssistant | undefined;
-    protected codingAgent: CodingAgentInterface = new CodingAgentInterface(this);
+    protected codingAgent = new AppBuilderAgentInterface(this);
 
     private previewUrlCache: string = '';
     private templateDetailsCache: TemplateDetails | null = null;
@@ -126,7 +128,7 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> {
      * Sets up services and begins deployment process
      */
     async initialize(
-        initArgs: AgentInitArgs,
+        initArgs: AppAgentInitArgs,
         ..._args: unknown[]
     ): Promise<CodeGenState> {
 
@@ -449,7 +451,7 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> {
         };
     }
 
-    protected getAgentInterface(): CodingAgentInterface {
+    getAgentInterface(): CodingAgentInterface {
         return this.codingAgent;
     }
 

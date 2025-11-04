@@ -20,18 +20,19 @@ import { DeepCodeDebugger } from '../assistants/codeDebugger';
 import { BaseOperationOptions } from '../operations/common';
 import { updatePackageJson } from '../utils/packageSyncer';
 import { CodingAgentInterface } from '../services/implementations/CodingAgent';
+import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
 import { validateAndCleanBootstrapCommands } from '../utils/common';
 import { ConversationMessage, ConversationState } from '../inferutils/common';
 import { InferenceContext } from '../inferutils/config.types';
+import { IBaseAgent } from '../services/interfaces/IBaseAgent';
 
 const DEFAULT_CONVERSATION_SESSION_ID = 'default';
 /**
  * BaseProjectAgent - Common infrastructure for all project types
- * 
- * Provides shared functionality
+ * Implements IBaseAgent with universal methods only
  */
 export abstract class BaseProjectAgent<TState extends BaseProjectState> 
-    extends Agent<Env, TState> {
+    extends Agent<Env, TState> implements IBaseAgent {
     
     // === Static Configuration ===
     protected static readonly MAX_COMMANDS_HISTORY = 10;
@@ -874,9 +875,9 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
 
     /**
      * Get agent interface for operations
-     * Hook for subclasses:
+     * Hook for subclasses to return their specific wrapper
      * - App: AppBuilderAgentInterface
      * - Workflow: CodingAgentInterface
      */
-    protected abstract getAgentInterface(): CodingAgentInterface;
+    abstract getAgentInterface(): AppBuilderAgentInterface | CodingAgentInterface;
 }

@@ -73,4 +73,45 @@ export interface CodeGenState extends BaseProjectState {
     currentDevState: CurrentDevState;
     reviewCycles?: number;
     currentPhase?: PhaseConceptType;
-} 
+}
+
+export interface WorkflowMetadata {
+    name: string;
+    description: string;
+    params: Record<string, {
+        type: 'string' | 'number' | 'boolean' | 'object';
+        description: string;
+        example?: unknown;
+        required: boolean;
+    }>;
+    bindings?: {
+        envVars?: Record<string, {
+            type: 'string';
+            description: string;
+            default?: string;
+            required?: boolean;
+        }>;
+        secrets?: Record<string, {
+            type: 'secret';
+            description: string;
+            required?: boolean;
+        }>;
+        resources?: Record<string, {
+            type: 'kv' | 'r2' | 'd1' | 'queue' | 'ai';
+            description: string;
+            required?: boolean;
+        }>;
+    };
+}
+
+/**
+ * WorkflowGenState - Workflow-specific state extending base project state
+ */
+export interface WorkflowGenState extends BaseProjectState {
+    workflowCode: string | null;
+    workflowClassName: string | null;
+    workflowMetadata: WorkflowMetadata | null;
+    deploymentUrl: string | null;
+    deploymentStatus: 'idle' | 'deploying' | 'deployed' | 'failed';
+    deploymentError: string | null;
+}

@@ -1,13 +1,13 @@
 import { WebSocketMessageResponses } from '../../../agents/constants';
 import { BaseController } from '../baseController';
 import { generateId } from '../../../utils/idGenerator';
-import { CodeGenState } from '../../../agents/core/state';
 import { getAgentStub, getTemplateForQuery } from '../../../agents';
 import { AgentConnectionData, AgentPreviewResponse, CodeGenArgs } from './types';
 import { ApiResponse, ControllerResponse } from '../types';
 import { RouteContext } from '../../types/route-context';
 import { ModelConfigService } from '../../../database';
 import { ModelConfig } from '../../../agents/inferutils/config.types';
+import { AgentInitArgs, AppAgentInitArgs, WorkflowAgentInitArgs } from '../../../agents/core/types';
 import { RateLimitService } from '../../../services/rate-limit/rateLimits';
 import { validateWebSocketOrigin } from '../../../middleware/security/websocket';
 import { createLogger } from '../../../logger';
@@ -111,42 +111,71 @@ export class CodingAgentController extends BaseController {
                 modelConfigsCount: Object.keys(userModelConfigs).length,
             });
 
-            const { templateDetails, selection } = await getTemplateForQuery(env, inferenceContext, query, body.images, this.logger);
-
             const websocketUrl = `${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}/api/agent/${agentId}/ws`;
             const httpStatusUrl = `${url.origin}/api/agent/${agentId}`;
 
-            let uploadedImages: ProcessedImageAttachment[] = [];
-            if (body.images) {
-                uploadedImages = await Promise.all(body.images.map(async (image) => {
-                    return uploadImage(env, image, ImageType.UPLOADS);
-                }));
-            }
-        
-            writer.write({
-                message: 'Code generation started',
-                agentId: agentId,
-                websocketUrl,
-                httpStatusUrl,
-                template: {
-                    name: templateDetails.name,
-                    files: getTemplateImportantFiles(templateDetails),
+            const projectType = body.projectType || 'app';
+            let initArgs: AgentInitArgs;
+            
+            if (projectType === 'workflow') {
+                initArgs = {
+                    projectType: 'workflow',
+                    query,
+                    hostname,
+                    inferenceContext,
+                } satisfies WorkflowAgentInitArgs;
+                
+                writer.write({
+                    message: 'Workflow generation started',
+                    agentId: agentId,
+                    websocketUrl,
+                    httpStatusUrl,
+                });
+            } else {
+                const { templateDetails, selection } = await getTemplateForQuery(
+                    env, 
+                    inferenceContext, 
+                    query, 
+                    body.images, 
+                    this.logger
+                );
+                
+                let uploadedImages: ProcessedImageAttachment[] = [];
+                if (body.images) {
+                    uploadedImages = await Promise.all(
+                        body.images.map(image => uploadImage(env, image, ImageType.UPLOADS))
+                    );
                 }
-            });
+                
+                initArgs = {
+                    projectType: 'app',
+                    query,
+                    language: body.language || defaultCodeGenArgs.language,
+                    frameworks: body.frameworks || defaultCodeGenArgs.frameworks,
+                    hostname,
+                    inferenceContext,
+                    images: uploadedImages,
+                    onBlueprintChunk: (chunk: string) => {
+                        writer.write({ chunk });
+                    },
+                    templateInfo: { templateDetails, selection },
+                    agentMode: body.agentMode,
+                } satisfies AppAgentInitArgs;
+                
+                writer.write({
+                    message: 'Code generation started',
+                    agentId: agentId,
+                    websocketUrl,
+                    httpStatusUrl,
+                    template: {
+                        name: templateDetails.name,
+                        files: getTemplateImportantFiles(templateDetails),
+                    }
+                });
+            }
 
-            const agentPromise = agentInstance.initialize({
-                query,
-                language: body.language || defaultCodeGenArgs.language,
-                frameworks: body.frameworks || defaultCodeGenArgs.frameworks,
-                hostname,
-                inferenceContext,
-                images: uploadedImages,
-                onBlueprintChunk: (chunk: string) => {
-                    writer.write({chunk});
-                },
-                templateInfo: { templateDetails, selection },
-            }, body.agentMode || defaultCodeGenArgs.agentMode) as Promise<CodeGenState>;
-            agentPromise.then(async (_state: CodeGenState) => {
+            const agentPromise = agentInstance.initialize(initArgs);
+            agentPromise.then(async () => {
                 writer.write("terminate");
                 writer.close();
                 this.logger.info(`Agent ${agentId} terminated successfully`);

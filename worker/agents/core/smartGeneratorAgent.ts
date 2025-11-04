@@ -1,40 +1,75 @@
-import { SimpleCodeGeneratorAgent } from "./simpleGeneratorAgent";
-import { CodeGenState } from "./state";
-import { AgentInitArgs } from "./types";
+import { BaseProjectAgent } from './baseProjectAgent';
+import { SimpleCodeGeneratorAgent } from './simpleGeneratorAgent';
+import { SimpleWorkflowGeneratorAgent } from './simpleWorkflowGeneratorAgent';
+import { CodeGenState, WorkflowGenState } from './state';
+import { AgentInitArgs } from './types';
+import { TemplateDetails } from '../../services/sandbox/sandboxTypes';
+import { FileConceptType } from '../schemas';
+import { CodingAgentInterface } from '../services/implementations/CodingAgent';
+import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
 
 /**
- * SmartCodeGeneratorAgent - Smartly orchestrated AI-powered code generation
- * using an LLM orchestrator instead of state machine based orchestrator.
- * TODO: NOT YET IMPLEMENTED, CURRENTLY Just uses SimpleCodeGeneratorAgent
+ * SmartCodeGeneratorAgent - Polymorphic router for app and workflow agents
+ * Routes to the appropriate concrete agent based on projectType
  */
-export class SmartCodeGeneratorAgent extends SimpleCodeGeneratorAgent {
-    
+export class SmartCodeGeneratorAgent extends BaseProjectAgent<CodeGenState | WorkflowGenState> {
+    private activeAgent!: SimpleCodeGeneratorAgent | SimpleWorkflowGeneratorAgent;
+
     /**
-     * Initialize the smart code generator with project blueprint and template
-     * Sets up services and begins deployment process
+     * Initialize the appropriate agent based on projectType
      */
-    async initialize(
-        initArgs: AgentInitArgs,
-        agentMode: 'deterministic' | 'smart'
-    ): Promise<CodeGenState> {
-        this.logger().info('🧠 Initializing SmartCodeGeneratorAgent with enhanced AI orchestration', {
-            queryLength: initArgs.query.length,
-            agentType: agentMode
-        });
-
-        // Call the parent initialization
-        return await super.initialize(initArgs);
-    }
-
-    async generateAllFiles(reviewCycles: number = 10): Promise<void> {
-        if (this.state.agentMode === 'deterministic') {
-            return super.generateAllFiles(reviewCycles);
+    async initialize(args: AgentInitArgs): Promise<CodeGenState | WorkflowGenState> {
+        if (args.projectType === 'workflow') {
+            this.activeAgent = new SimpleWorkflowGeneratorAgent(this.ctx, this.env);
+            const state = await this.activeAgent.initialize(args);
+            this.setState(state);
+            return state;
         } else {
-            return this.builderLoop();
+            this.activeAgent = new SimpleCodeGeneratorAgent(this.ctx, this.env);
+            const state = await this.activeAgent.initialize(args, args.agentMode || 'deterministic');
+            this.setState(state);
+            return state;
         }
     }
 
-    async builderLoop() {
-        // TODO
+    // Satisfy BaseProjectAgent abstract methods (delegated via proxy)
+    getProjectType(): 'app' | 'workflow' {
+        return this.activeAgent?.getProjectType() || 'app';
+    }
+
+    getTemplateDetails(): TemplateDetails {
+        return this.activeAgent.getTemplateDetails();
+    }
+
+    getOperationOptions() {
+        return this.activeAgent.getOperationOptions();
+    }
+
+    getAgentInterface(): CodingAgentInterface | AppBuilderAgentInterface {
+        return this.activeAgent.getAgentInterface();
+    }
+
+    async generateFiles(
+        phaseName: string,
+        phaseDescription: string,
+        requirements: string[],
+        files: FileConceptType[]
+    ) {
+        return this.activeAgent.generateFiles(phaseName, phaseDescription, requirements, files);
+    }
+
+    async generateReadme(): Promise<void> {
+        return this.activeAgent.generateReadme();
+    }
+
+    async onExecutedCommandsHook(commands: string[]): Promise<void> {
+        return this.activeAgent.onExecutedCommandsHook(commands);
+    }
+
+    /**
+     * Check if agent has been initialized
+     */
+    isInitialized(): boolean {
+        return this.activeAgent !== undefined;
     }
 }
