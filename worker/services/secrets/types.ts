@@ -27,7 +27,7 @@ export interface EncryptedSecretData {
 
 export interface StoreSecretRequest {
     name: string;
-    secretType: 'api_key' | 'token' | 'password' | 'config' | 'custom';
+    secretType: 'api_key' | 'token' | 'password' | 'config' | 'cloudflare_account' | 'custom';
     value: string;
     provider?: string;
     metadata?: Record<string, unknown>;

@@ -26,6 +26,7 @@ import { ConversationMessage, ConversationState } from '../inferutils/common';
 import { InferenceContext } from '../inferutils/config.types';
 import { IBaseAgent } from '../services/interfaces/IBaseAgent';
 import { GitHubExportResult, GitHubService } from 'worker/services/github';
+import { UserSecretsService } from 'worker/services/secrets/UserSecretsService';
 
 const DEFAULT_CONVERSATION_SESSION_ID = 'default';
 /**
@@ -219,6 +220,29 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     }
 
     // === Abstract Methods (must implement in subclasses) ===
+    
+    /**
+     * Get user's Cloudflare credentials for workflow deployment
+     * Returns null if not configured
+     */
+    protected async getCloudflareCredentials(): Promise<{
+        accountId: string;
+        apiToken: string;
+    } | null> {
+        try {
+            const secretsService = new UserSecretsService(this.env);
+            return await secretsService.getCloudflareCredentials(
+                this.state.inferenceContext.userId
+            );
+        } catch (error) {
+            this.logger().warn('Failed to get Cloudflare credentials', { error });
+            return null;
+        }
+    }
+
+    // ==========================================
+    // ABSTRACT METHODS
+    // ==========================================
     
     /**
      * Returns the project type for logging and routing

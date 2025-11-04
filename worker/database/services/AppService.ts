@@ -47,13 +47,16 @@ export class AppService extends BaseService {
     // ========================================
 
     /**
-     * Create a new app
+     * Create a new project (app or workflow)
+     * @param appData - Project data including optional projectType ('app' | 'workflow')
+     * @returns Created project
      */
     async createApp(appData:schema.NewApp): Promise<schema.App> {
         const [app] = await this.database
             .insert(schema.apps)
             .values({
                 ...appData,
+                // Defaults are handled by schema: projectType='app', deploymentTarget='platform'
             })
             .returning();
         return app;
@@ -283,24 +286,65 @@ export class AppService extends BaseService {
         });
     }
 
+    // ========================================
+    // WORKFLOW-SPECIFIC OPERATIONS
+    // ========================================
+
     /**
-     * Get user apps with favorite status
+     * Update workflow metadata
+     */
+    async updateWorkflowMetadata(
+        appId: string,
+        metadata: Record<string, unknown>
+    ): Promise<boolean> {
+        return this.updateApp(appId, {
+            workflowMetadata: metadata
+        });
+    }
+
+    /**
+     * List user workflows
+     */
+    async listUserWorkflows(
+        userId: string,
+        options: PaginationParams = {}
+    ): Promise<AppWithFavoriteStatus[]> {
+        return this.getUserAppsWithFavorites(userId, {
+            ...options,
+            projectType: 'workflow'
+        });
+    }
+
+    // ========================================
+    // USER PROJECT LISTING
+    // ========================================
+
+    /**
+     * Get user projects (apps/workflows) with favorite status
      * Optimized to fetch favorites separately to avoid subquery memory issues
+     * @param userId - User ID
+     * @param options - Pagination and filter options including optional projectType filter
      */
     async getUserAppsWithFavorites(
         userId: string, 
-        options: PaginationParams = {}
+        options: PaginationParams & { projectType?: 'app' | 'workflow' } = {}
     ): Promise<AppWithFavoriteStatus[]> {
-        const { limit = 50, offset = 0 } = options;
+        const { limit = 50, offset = 0, projectType } = options;
         
         // Use 'fresh' strategy for user's own data to ensure they see latest changes
         const readDb = this.getReadDb('fresh');
+        
+        // Build where conditions
+        const whereConditions = [eq(schema.apps.userId, userId)];
+        if (projectType) {
+            whereConditions.push(eq(schema.apps.projectType, projectType));
+        }
         
         // Fetch user's apps first
         const apps = await readDb
             .select()
             .from(schema.apps)
-            .where(eq(schema.apps.userId, userId))
+            .where(and(...whereConditions))
             .orderBy(desc(schema.apps.updatedAt))
             .limit(limit)
             .offset(offset);

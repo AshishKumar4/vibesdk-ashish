@@ -31,7 +31,8 @@ import { BaseSandboxService } from './BaseSandboxService';
 import { 
     buildDeploymentConfig, 
     parseWranglerConfig, 
-    deployToDispatch, 
+    deployToDispatch,
+    deployWorker,
 } from '../deployer/deploy';
 import { 
     createAssetManifest 
@@ -1785,20 +1786,31 @@ export class SandboxSdkClient extends BaseSandboxService {
     // ==========================================
     // DEPLOYMENT
     // ==========================================
-    async deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult> {
+    async deployToCloudflareWorkers(
+        instanceId: string,
+        userCredentials?: {
+            accountId: string;
+            apiToken: string;
+        }
+    ): Promise<DeploymentResult> {
         try {
-            this.logger.info('Starting deployment', { instanceId });
+            this.logger.info('Starting deployment', { instanceId, isUserDeployment: !!userCredentials });
             
             // Get project metadata
             const metadata = await this.getInstanceMetadata(instanceId);
             const projectName = metadata?.projectName || instanceId;
             
-            // Get credentials from environment (secure - no exposure to external processes)
-            const accountId = env.CLOUDFLARE_ACCOUNT_ID;
-            const apiToken = env.CLOUDFLARE_API_TOKEN;
+            // Use user credentials if provided, otherwise use platform credentials
+            const accountId = userCredentials?.accountId || env.CLOUDFLARE_ACCOUNT_ID;
+            const apiToken = userCredentials?.apiToken || env.CLOUDFLARE_API_TOKEN;
+            const isUserDeployment = !!userCredentials;
             
             if (!accountId || !apiToken) {
-                throw new Error('CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set in environment');
+                throw new Error(
+                    isUserDeployment 
+                        ? 'User accountId and apiToken must be provided for self-hosted deployment'
+                        : 'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set in environment'
+                );
             }
             
             this.logger.info('Processing deployment', { instanceId });
@@ -1926,8 +1938,26 @@ export class SandboxSdkClient extends BaseSandboxService {
             
             // Step 7: Deploy using pure function
             this.logger.info('Deploying to Cloudflare');
-            if ('DISPATCH_NAMESPACE' in env) {
-                this.logger.info('Using dispatch namespace', { dispatchNamespace: env.DISPATCH_NAMESPACE });
+            
+            // Use dispatch namespace only for platform deployments (apps)
+            // User deployments (workflows) go to normal workers
+            if (isUserDeployment) {
+                // Normal worker deployment to user account
+                this.logger.info('Deploying as normal worker to user account', { accountId });
+                await deployWorker(
+                    deployConfig,
+                    fileContents,
+                    additionalModules,
+                    config.migrations,
+                    config.assets,
+                    undefined // No dispatch namespace for user deployments
+                );
+            } else {
+                // Platform deployment using Workers for Platforms
+                if (!('DISPATCH_NAMESPACE' in env)) {
+                    throw new Error('DISPATCH_NAMESPACE not found in environment variables, cannot deploy to platform');
+                }
+                this.logger.info('Deploying to Workers for Platforms', { dispatchNamespace: env.DISPATCH_NAMESPACE });
                 await deployToDispatch(
                     {
                         ...deployConfig,
@@ -1938,19 +1968,20 @@ export class SandboxSdkClient extends BaseSandboxService {
                     config.migrations,
                     config.assets
                 );
-            } else {
-                throw new Error('DISPATCH_NAMESPACE not found in environment variables, cannot deploy without dispatch namespace');
             }
             
             // Step 8: Determine deployment URL
-            const deployedUrl = `${this.getProtocolForHost()}://${projectName}.${getPreviewDomain(env)}`;
+            // Platform deployments use custom domain, user deployments use workers.dev
+            const deployedUrl = isUserDeployment
+                ? `https://${projectName}.${accountId}.workers.dev`
+                : `${this.getProtocolForHost()}://${projectName}.${getPreviewDomain(env)}`;
             const deploymentId = projectName;
             
             this.logger.info('Deployment successful', { 
                 instanceId,
                 deployedUrl, 
                 deploymentId,
-                mode: 'dispatch-namespace'
+                mode: isUserDeployment ? 'user-account' : 'workers-for-platforms'
             });
             
             return {
