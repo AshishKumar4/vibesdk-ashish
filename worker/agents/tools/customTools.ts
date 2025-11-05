@@ -6,8 +6,8 @@ import { toolFeedbackDefinition } from './toolkit/feedback';
 import { createQueueRequestTool } from './toolkit/queue-request';
 import { createGetLogsTool } from './toolkit/get-logs';
 import { createDeployPreviewTool } from './toolkit/deploy-preview';
-import { CodingAgentInterface } from 'worker/agents/services/implementations/CodingAgent';
-import { AppBuilderAgentInterface } from 'worker/agents/services/implementations/AppBuilderAgent';
+import type { ICodingAgent } from 'worker/agents/services/interfaces/ICodingAgent';
+import type { IAppBuilderAgent } from 'worker/agents/services/interfaces/IAppBuilderAgent';
 import { createDeepDebuggerTool } from "./toolkit/deep-debugger";
 import { createRenameProjectTool } from './toolkit/rename-project';
 import { createAlterBlueprintTool } from './toolkit/alter-blueprint';
@@ -38,7 +38,7 @@ export async function executeToolWithDefinition<TArgs, TResult>(
  * Add new tools here - they're automatically included in the conversation
  */
 export function buildTools(
-    agent: CodingAgentInterface,
+    agent: ICodingAgent,
     logger: StructuredLogger,
     toolRenderer: RenderToolCall,
     streamCb: (chunk: string) => void,
@@ -59,9 +59,9 @@ export function buildTools(
     ];
     
     // Add app-specific tools only for app agents
-    if (agent instanceof AppBuilderAgentInterface) {
+    if (agent.getProjectType() === 'app') {
         baseTools.push(
-            createAlterBlueprintTool(agent, logger),
+            createAlterBlueprintTool(agent as IAppBuilderAgent, logger),
         );
     }
     
@@ -82,9 +82,9 @@ export function buildDebugTools(session: DebugSession, logger: StructuredLogger,
   ];
   
   // Add app-specific debug tools only for app agents
-  if (session.agent instanceof AppBuilderAgentInterface) {
+  if (session.agent.getProjectType() === 'app') {
     tools.push(
-      createRegenerateFileTool(session.agent, logger),
+      createRegenerateFileTool(session.agent as IAppBuilderAgent, logger),
     );
   }
 

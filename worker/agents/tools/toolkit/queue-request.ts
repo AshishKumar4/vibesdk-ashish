@@ -1,13 +1,13 @@
 import { ToolDefinition } from '../types';
 import { StructuredLogger } from '../../../logger';
-import { CodingAgentInterface } from 'worker/agents/services/implementations/CodingAgent';
+import type { ICodingAgent } from "worker/agents/services/interfaces/ICodingAgent";
 
 type QueueRequestArgs = {
 	modificationRequest: string;
 };
 
 export function createQueueRequestTool(
-	agent: CodingAgentInterface,
+	agent: ICodingAgent,
 	logger: StructuredLogger
 ): ToolDefinition<QueueRequestArgs, null> {
 	return {

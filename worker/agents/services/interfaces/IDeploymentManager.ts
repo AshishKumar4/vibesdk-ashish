@@ -21,6 +21,11 @@ export interface CloudflareDeploymentCallbacks {
     onCompleted?: (data: Omit<CloudflareDeploymentCompletedMessage, 'type'>) => void;
     onError?: (data: Omit<CloudflareDeploymentErrorMessage, 'type'>) => void;
     onPreviewExpired?: () => void;
+    // Optional user credentials for self-hosted workflow deployment
+    userCredentials?: {
+        accountId: string;
+        apiToken: string;
+    };
 }
 
 /**

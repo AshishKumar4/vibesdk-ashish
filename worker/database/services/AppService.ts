@@ -19,6 +19,7 @@ import type {
     TimePeriod,
     PaginationParams
 } from '../types';
+import { ProjectType } from 'worker/agents/core/types';
 
 // Type definitions
 type WhereCondition = ReturnType<typeof eq> | ReturnType<typeof and> | ReturnType<typeof or> | undefined;
@@ -48,7 +49,7 @@ export class AppService extends BaseService {
 
     /**
      * Create a new project (app or workflow)
-     * @param appData - Project data including optional projectType ('app' | 'workflow')
+     * @param appData - Project data including optional projectType (ProjectType)
      * @returns Created project
      */
     async createApp(appData:schema.NewApp): Promise<schema.App> {
@@ -327,7 +328,7 @@ export class AppService extends BaseService {
      */
     async getUserAppsWithFavorites(
         userId: string, 
-        options: PaginationParams & { projectType?: 'app' | 'workflow' } = {}
+        options: PaginationParams & { projectType?: ProjectType } = {}
     ): Promise<AppWithFavoriteStatus[]> {
         const { limit = 50, offset = 0, projectType } = options;
         

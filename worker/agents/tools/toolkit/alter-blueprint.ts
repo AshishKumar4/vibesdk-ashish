@@ -1,6 +1,6 @@
 import { ToolDefinition } from '../types';
 import { StructuredLogger } from '../../../logger';
-import { AppBuilderAgentInterface } from 'worker/agents/services/implementations/AppBuilderAgent';
+import type { IAppBuilderAgent } from 'worker/agents/services/interfaces/IAppBuilderAgent';
 import { Blueprint } from 'worker/agents/schemas';
 
 type AlterBlueprintArgs = {
@@ -10,7 +10,7 @@ type AlterBlueprintArgs = {
 };
 
 export function createAlterBlueprintTool(
-  agent: AppBuilderAgentInterface,
+  agent: IAppBuilderAgent,
   logger: StructuredLogger
 ): ToolDefinition<AlterBlueprintArgs, Blueprint> {
   return {

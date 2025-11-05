@@ -8,6 +8,8 @@ import { TemplateSelection } from '../schemas';
 import { CurrentDevState } from './state';
 import { ProcessedImageAttachment } from 'worker/types/image-attachment';
 
+export type ProjectType = 'app' | 'workflow';
+
 /**
  * Base initialization arguments shared by all agent types
  */

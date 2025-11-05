@@ -2,7 +2,7 @@
 import { BaseController } from '../baseController';
 import { ApiResponse, ControllerResponse } from '../types';
 import type { RouteContext } from '../../types/route-context';
-import { getAgentStubLightweight } from '../../../agents';
+import { getAgentStub } from '../../../agents';
 import { AppService } from '../../../database/services/AppService';
 import { 
     AppDetailsData, 
@@ -58,7 +58,7 @@ export class AppViewController extends BaseController {
             
             try {
                 // Use lightweight stub for read-only operations (faster - skips template loading)
-                const agentStub = await getAgentStubLightweight(env, appResult.id);
+                const agentStub = await getAgentStub(env, appResult.id);
                 agentSummary = await agentStub.getSummary();
 
                 previewUrl = await agentStub.getPreviewUrlCache();

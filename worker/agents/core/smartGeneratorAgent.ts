@@ -1,79 +1,103 @@
-import { BaseProjectAgent } from './baseProjectAgent';
+import { Agent, AgentContext, Connection, ConnectionContext } from 'agents';
 import { SimpleCodeGeneratorAgent } from './simpleGeneratorAgent';
 import { SimpleWorkflowGeneratorAgent } from './simpleWorkflowGeneratorAgent';
 import { CodeGenState, WorkflowGenState } from './state';
-import { AgentInitArgs } from './types';
-import { TemplateDetails } from '../../services/sandbox/sandboxTypes';
-import { FileConceptType } from '../schemas';
-import { CodingAgentInterface } from '../services/implementations/CodingAgent';
-import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
+import type { ProjectType, AgentInitArgs } from './types';
+import type { AgentInfrastructure } from './baseProjectAgent';
+import type { TemplateDetails, PreviewType, GitHubPushRequest } from '../../services/sandbox/sandboxTypes';
+import type { FileConceptType, FileOutputType } from '../schemas';
+import type { AgentSummary } from './types';
+import { GitHubExportResult } from 'worker/services/github';
 
-/**
- * SmartCodeGeneratorAgent - Polymorphic router for app and workflow agents
- * Routes to the appropriate concrete agent based on projectType
+/** 
+ * Durable Object router that delegates to project-specific implementations.
+ * Acts as infrastructure layer for SimpleCodeGeneratorAgent ('app') or SimpleWorkflowGeneratorAgent ('workflow').
  */
-export class SmartCodeGeneratorAgent extends BaseProjectAgent<CodeGenState | WorkflowGenState> {
+export class SmartCodeGeneratorAgent 
+    extends Agent<Env, CodeGenState | WorkflowGenState> 
+    implements AgentInfrastructure<CodeGenState | WorkflowGenState> {
     private activeAgent!: SimpleCodeGeneratorAgent | SimpleWorkflowGeneratorAgent;
+    private onStartDeferred?: { props?: Record<string, unknown>; resolve: () => void };
+    
+    initialState: CodeGenState | WorkflowGenState = SimpleCodeGeneratorAgent.INITIAL_STATE;
 
-    /**
-     * Initialize the appropriate agent based on projectType
-     */
-    async initialize(args: AgentInitArgs): Promise<CodeGenState | WorkflowGenState> {
-        if (args.projectType === 'workflow') {
-            this.activeAgent = new SimpleWorkflowGeneratorAgent(this.ctx, this.env);
-            const state = await this.activeAgent.initialize(args);
-            this.setState(state);
-            return state;
+    constructor(ctx: AgentContext, env: Env) {
+        const projectTypeProp = (ctx.props as Record<string, unknown>)?.projectType as ProjectType | undefined;
+        
+        if (projectTypeProp === 'workflow') {
+            (SmartCodeGeneratorAgent.prototype as { initialState: WorkflowGenState }).initialState = 
+                SimpleWorkflowGeneratorAgent.INITIAL_STATE;
+        }
+        
+        super(ctx, env);
+        
+        const actualProjectType = this.state.projectType || projectTypeProp || 'app';
+        
+        if (actualProjectType === 'workflow') {
+            // Safe cast: this is a workflow agent with WorkflowGenState
+            this.activeAgent = new SimpleWorkflowGeneratorAgent(env, this as AgentInfrastructure<WorkflowGenState>);
         } else {
-            this.activeAgent = new SimpleCodeGeneratorAgent(this.ctx, this.env);
-            const state = await this.activeAgent.initialize(args, args.agentMode || 'deterministic');
-            this.setState(state);
-            return state;
+            // Safe cast: this is an app agent with CodeGenState
+            this.activeAgent = new SimpleCodeGeneratorAgent(env, this as AgentInfrastructure<CodeGenState>);
+        }
+        
+        if (this.onStartDeferred) {
+            this.activeAgent.onStart(this.onStartDeferred.props)
+                .finally(this.onStartDeferred.resolve);
+            this.onStartDeferred = undefined;
         }
     }
 
-    // Satisfy BaseProjectAgent abstract methods (delegated via proxy)
-    getProjectType(): 'app' | 'workflow' {
-        return this.activeAgent?.getProjectType() || 'app';
+    sql<T = unknown>(query: TemplateStringsArray, ...values: (string | number | boolean | null)[]): T[] {
+        return super.sql(query, ...values);
     }
 
-    getTemplateDetails(): TemplateDetails {
-        return this.activeAgent.getTemplateDetails();
+    getWebSockets(): WebSocket[] {
+        return this.ctx.getWebSockets();
+    }
+    
+    async onStart(props?: Record<string, unknown>): Promise<void> {
+        if (!this.activeAgent) {
+            return new Promise<void>((resolve) => {
+                this.onStartDeferred = { props, resolve };
+            });
+        }
+        return this.activeAgent.onStart(props);
     }
 
-    ensureTemplateDetails(): Promise<TemplateDetails> {
-        return this.activeAgent.ensureTemplateDetails();
+    onConnect(connection: Connection, ctx: ConnectionContext): void | Promise<void> {
+        return this.activeAgent.onConnect(connection, ctx);
     }
 
-    getOperationOptions() {
-        return this.activeAgent.getOperationOptions();
+    async onMessage(connection: Connection, message: string): Promise<void> {
+        return this.activeAgent.onMessage(connection, message);
     }
 
-    getAgentInterface(): CodingAgentInterface | AppBuilderAgentInterface {
-        return this.activeAgent.getAgentInterface();
+    async onClose(connection: Connection): Promise<void> {
+        return this.activeAgent.onClose(connection);
     }
-
-    async generateFiles(
-        phaseName: string,
-        phaseDescription: string,
-        requirements: string[],
-        files: FileConceptType[]
-    ) {
+    
+    // RPC Methods - delegated to activeAgent
+    getProjectType(): ProjectType { return this.activeAgent.getProjectType(); }
+    getTemplateDetails(): TemplateDetails { return this.activeAgent.getTemplateDetails(); }
+    ensureTemplateDetails(): Promise<TemplateDetails> { return this.activeAgent.ensureTemplateDetails(); }
+    getOperationOptions() { return this.activeAgent.getOperationOptions(); }
+    getFullState(): Promise<CodeGenState | WorkflowGenState> { return this.activeAgent.getFullState(); }
+    isInitialized(): Promise<boolean> { return this.activeAgent.isInitialized(); }
+    initialize(args: AgentInitArgs): Promise<CodeGenState | WorkflowGenState> { 
+        return this.activeAgent.initialize(args as never); 
+    }
+    getSummary(): Promise<AgentSummary> { return this.activeAgent.getSummary(); }
+    getPreviewUrlCache(): string { return this.activeAgent.getPreviewUrlCache(); }
+    generateFiles(phaseName: string, phaseDescription: string, requirements: string[], files: FileConceptType[]) {
         return this.activeAgent.generateFiles(phaseName, phaseDescription, requirements, files);
     }
-
-    async generateReadme(): Promise<void> {
-        return this.activeAgent.generateReadme();
+    generateReadme(): Promise<void> { return this.activeAgent.generateReadme(); }
+    onExecutedCommandsHook(commands: string[]): Promise<void> { return this.activeAgent.onExecutedCommandsHook(commands); }
+    deployToSandbox(files?: FileOutputType[], redeploy?: boolean, commitMessage?: string, clearLogs?: boolean): Promise<PreviewType | null> {
+        return this.activeAgent.deployToSandbox(files, redeploy, commitMessage, clearLogs);
     }
-
-    async onExecutedCommandsHook(commands: string[]): Promise<void> {
-        return this.activeAgent.onExecutedCommandsHook(commands);
-    }
-
-    /**
-     * Check if agent has been initialized
-     */
-    isInitialized(): boolean {
-        return this.activeAgent !== undefined;
-    }
+    pushToGitHub(request: GitHubPushRequest): Promise<GitHubExportResult> { return this.activeAgent.pushToGitHub(request); }
+    getGitHubToken() { return this.activeAgent.getGitHubToken(); }
+    exportGitObjects() { return this.activeAgent.exportGitObjects(); }
 }

@@ -10,7 +10,7 @@ import { executeInference } from '../inferutils/infer';
 import { InferenceContext, ModelConfig } from '../inferutils/config.types';
 import { createObjectLogger } from '../../logger';
 import type { ToolDefinition } from '../tools/types';
-import { CodingAgentInterface } from '../services/implementations/CodingAgent';
+import type { ICodingAgent } from '../services/interfaces/ICodingAgent';
 import { AGENT_CONFIG } from '../inferutils/config';
 import { buildDebugTools } from '../tools/customTools';
 import { RenderToolCall } from '../operations/UserConversationProcessor';
@@ -544,7 +544,7 @@ type LoopDetectionState = {
 
 export type DebugSession = {
     filesIndex: FileState[];
-    agent: CodingAgentInterface;
+    agent: ICodingAgent;
     runtimeErrors?: RuntimeError[];
 };
 

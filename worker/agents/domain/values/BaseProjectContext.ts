@@ -13,9 +13,6 @@ export abstract class BaseProjectContext {
         public readonly allFiles: FileState[],
         public readonly commandsHistory: string[]
     ) {
-        // Freeze to ensure immutability
-        Object.freeze(this);
-        Object.freeze(this.dependencies);
     }
 
 

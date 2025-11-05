@@ -1,24 +1,24 @@
-import { IBaseAgent } from './IBaseAgent';
+import { ICodingAgent } from './ICodingAgent';
 import { Blueprint } from '../../schemas';
 import { OperationOptions } from '../../operations/common';
 
 /**
- * IAppBuilderAgent - App-specific agent interface
- * Extends IBaseAgent with app-specific methods (blueprint, file regeneration)
+ * IAppBuilderAgent - Interface for app-specific agent methods
+ * Extends ICodingAgent with app-specific operations (blueprint, file regeneration)
  */
-export abstract class IAppBuilderAgent extends IBaseAgent {
+export interface IAppBuilderAgent extends ICodingAgent {
     /**
      * Update project blueprint
      */
-    abstract updateBlueprint(patch: Partial<Blueprint>): Promise<Blueprint>;
+    updateBlueprint(patch: Partial<Blueprint>): Promise<Blueprint>;
     
     /**
      * Get operation options for this agent
      */
-    abstract getOperationOptions(): OperationOptions;
+    getOperationOptions(): OperationOptions;
     
     /**
      * Regenerate a file to fix issues
      */
-    abstract regenerateFileByPath(path: string, issues: string[]): Promise<{ path: string; diff: string }>;
+    regenerateFileByPath(path: string, issues: string[]): Promise<{ path: string; diff: string }>;
 }

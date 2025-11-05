@@ -1,7 +1,7 @@
 import { WebSocketMessageResponses } from '../../../agents/constants';
 import { BaseController } from '../baseController';
 import { generateId } from '../../../utils/idGenerator';
-import { getAgentStub, getTemplateForQuery } from '../../../agents';
+import { createAgent, getAgentStub, getTemplateForQuery } from '../../../agents';
 import { AgentConnectionData, AgentPreviewResponse, CodeGenArgs } from './types';
 import { ApiResponse, ControllerResponse } from '../types';
 import { RouteContext } from '../../types/route-context';
@@ -75,13 +75,15 @@ export class CodingAgentController extends BaseController {
                 }
             }
 
+            const projectType = body.projectType || 'app';
+
             const agentId = generateId();
             const modelConfigService = new ModelConfigService(env);
                                 
             // Fetch all user model configs, api keys and agent instance at once
             const [userConfigsRecord, agentInstance] = await Promise.all([
                 modelConfigService.getUserModelConfigs(user.id),
-                getAgentStub(env, agentId)
+                createAgent(env, agentId, projectType)
             ]);
                                 
             // Convert Record to Map and extract only ModelConfig properties
@@ -113,8 +115,6 @@ export class CodingAgentController extends BaseController {
 
             const websocketUrl = `${url.protocol === 'https:' ? 'wss:' : 'ws:'}//${url.host}/api/agent/${agentId}/ws`;
             const httpStatusUrl = `${url.origin}/api/agent/${agentId}`;
-
-            const projectType = body.projectType || 'app';
             let initArgs: AgentInitArgs;
             
             if (projectType === 'workflow') {

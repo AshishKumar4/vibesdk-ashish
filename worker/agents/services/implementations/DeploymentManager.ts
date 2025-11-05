@@ -659,8 +659,10 @@ export class DeploymentManager extends BaseAgentService implements IDeploymentMa
         });
 
         // Deploy to Cloudflare
+        // Pass user credentials if provided (for workflows), otherwise use platform credentials (for apps)
         const deploymentResult = await client.deployToCloudflareWorkers(
-            state.sandboxInstanceId
+            state.sandboxInstanceId,
+            callbacks?.userCredentials
         );
 
         logger.info('Deployment result:', deploymentResult);

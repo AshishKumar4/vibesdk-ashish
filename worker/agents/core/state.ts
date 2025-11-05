@@ -3,6 +3,7 @@ import type { Blueprint, PhaseConceptType ,
 } from '../schemas';
 import type { ConversationMessage } from '../inferutils/common';
 import type { InferenceContext } from '../inferutils/config.types';
+import { ProjectType } from './types';
 
 export interface FileState extends FileOutputType {
     lastDiff: string;
@@ -27,6 +28,7 @@ export const MAX_PHASES = 12;
  * Common state fields shared by all project types (apps, workflows, etc.)
  */
 export interface BaseProjectState {
+    projectType: ProjectType;
     // Identity
     projectName: string;
     query: string;

@@ -25,9 +25,6 @@ export class PhasicGenerationContext extends BaseProjectContext {
         public readonly generatedPhases: PhaseState[]
     ) {
         super(query, templateDetails, dependencies, allFiles, commandsHistory);
-        // Freeze app-specific fields
-        Object.freeze(this.blueprint);
-        Object.freeze(this.generatedPhases);
     }
 
     /**

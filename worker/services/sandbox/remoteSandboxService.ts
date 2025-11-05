@@ -189,11 +189,22 @@ export class RemoteSandboxServiceClient extends BaseSandboxService{
     }
 
     /**
-     * Deploy a runner instance to Cloudflare Workers.
+     * Deploy instance to Cloudflare Workers
      * @param instanceId The ID of the runner instance to deploy
-     * @param credentials Optional Cloudflare deployment credentials
+     * @param userCredentials Optional user Cloudflare credentials for self-hosted deployment
      */
-    async deployToCloudflareWorkers(instanceId: string): Promise<DeploymentResult> {
+    async deployToCloudflareWorkers(
+        instanceId: string,
+        userCredentials?: {
+            accountId: string;
+            apiToken: string;
+        }
+    ): Promise<DeploymentResult> {
+        // Note: Remote sandbox service doesn't support user credentials yet
+        // This would need to be implemented in the remote API
+        if (userCredentials) {
+            throw new Error('User credential deployment not supported in remote sandbox service');
+        }
         return this.makeRequest(`/instances/${instanceId}/deploy`, 'POST', DeploymentResultSchema);
     }
 

@@ -2,23 +2,29 @@ import { Connection } from 'agents';
 import { createLogger } from '../../logger';
 import { WebSocketMessageRequests, WebSocketMessageResponses } from '../constants';
 import { SimpleCodeGeneratorAgent } from './simpleGeneratorAgent';
-import { WebSocketMessage, WebSocketMessageData, WebSocketMessageType } from '../../api/websocketTypes';
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_SIZE_BYTES } from '../../types/image-attachment';
+import { sendToConnection, sendError } from './websocketBroadcast';
+import type { BaseProjectAgent } from './baseProjectAgent';
+import type { BaseProjectState } from './state';
 
 const logger = createLogger('CodeGeneratorWebSocket');
 
-export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connection: Connection, message: string): void {
+/**
+ * Handles WebSocket messages for any project agent.
+ * Works with BaseProjectAgent and uses polymorphic methods that all agents implement.
+ */
+export function handleWebSocketMessage<TState extends BaseProjectState>(
+    agent: BaseProjectAgent<TState>, 
+    connection: Connection, 
+    message: string
+): void {
     try {
         logger.info(`Received WebSocket message from ${connection.id}: ${message}`);
         const parsedMessage = JSON.parse(message);
 
         switch (parsedMessage.type) {
             case WebSocketMessageRequests.GENERATE_ALL:
-                // Set shouldBeGenerating flag to indicate persistent intent
-                agent.setState({ 
-                    ...agent.state, 
-                    shouldBeGenerating: true 
-                });
+                agent.updateState({ shouldBeGenerating: true } as Partial<TState>);
                 
                 // Check if generation is already active to avoid duplicate processes
                 if (agent.isCodeGenerating()) {
@@ -35,13 +41,8 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                     logger.error('Error during code generation:', error);
                     sendError(connection, `Error generating files: ${error instanceof Error ? error.message : String(error)}`);
                 }).finally(() => {
-                    // Only clear shouldBeGenerating on successful completion
-                    // (errors might want to retry, so this could be handled differently)
                     if (!agent.isCodeGenerating()) {
-                        agent.setState({ 
-                            ...agent.state, 
-                            shouldBeGenerating: false 
-                        });
+                        agent.updateState({ shouldBeGenerating: false } as Partial<TState>);
                     }
                 });
                 break;
@@ -66,6 +67,12 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                 });
                 break;
             case WebSocketMessageRequests.CAPTURE_SCREENSHOT:
+                // Only supported for app agents
+                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                    sendError(connection, 'Screenshot capture not supported for this agent type');
+                    return;
+                }
+                
                 agent.captureScreenshot(parsedMessage.data.url, parsedMessage.data.viewport).then((screenshotResult) => {
                     if (!screenshotResult) {
                         logger.error('Failed to capture screenshot');
@@ -83,10 +90,9 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                 const wasCancelled = agent.cancelCurrentInference();
                 
                 // Clear shouldBeGenerating flag
-                agent.setState({ 
-                    ...agent.state, 
-                    shouldBeGenerating: false 
-                });
+                if (agent instanceof SimpleCodeGeneratorAgent) {
+                    agent.updateState({ shouldBeGenerating: false } as Partial<TState>);
+                }
                 
                 sendToConnection(connection, WebSocketMessageResponses.GENERATION_STOPPED, {
                     message: wasCancelled 
@@ -95,25 +101,24 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                 });
                 break;
             case WebSocketMessageRequests.RESUME_GENERATION:
+                // Only supported for app agents
+                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                    sendError(connection, 'Resume generation not supported for this agent type');
+                    return;
+                }
+                
                 // Set shouldBeGenerating and restart generation
                 logger.info('Resuming code generation');
-                agent.setState({ 
-                    ...agent.state, 
-                    shouldBeGenerating: true 
-                });
+                agent.updateState({ shouldBeGenerating: true } as Partial<TState>);
                 
                 if (!agent.isCodeGenerating()) {
                     sendToConnection(connection, WebSocketMessageResponses.GENERATION_RESUMED, {
                         message: 'Code generation resumed'
                     });
-                    agent.generateAllFiles().catch(error => {
+                    agent.generateAllFiles().catch((error: Error) => {
                         logger.error('Error resuming code generation:', error);
-                        sendError(connection, `Error resuming generation: ${error instanceof Error ? error.message : String(error)}`);
+                        sendError(connection, `Error resuming generation: ${error.message}`);
                     });
-                } else {
-                    // sendToConnection(connection, WebSocketMessageResponses.GENERATION_STARTED, {
-                    //     message: 'Code generation is already in progress'
-                    // });
                 }
                 break;
             case WebSocketMessageRequests.GITHUB_EXPORT:
@@ -125,7 +130,12 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                 });
                 break;
             case WebSocketMessageRequests.USER_SUGGESTION:
-                // Handle user suggestion for conversational AI
+                // Only supported for app agents (SimpleCodeGeneratorAgent)
+                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                    sendError(connection, 'USER_SUGGESTION not supported for this agent type');
+                    return;
+                }
+                
                 logger.info('Received user suggestion', {
                     messageLength: parsedMessage.message?.length || 0,
                     hasImages: !!parsedMessage.images && parsedMessage.images.length > 0,
@@ -159,8 +169,13 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
                 });
                 break;
             case WebSocketMessageRequests.GET_MODEL_CONFIGS:
-                logger.info('Fetching model configurations');
-                agent.getModelConfigsInfo().then(configsInfo => {
+                // Only supported for app agents
+                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                    sendError(connection, 'Model configs not available for this agent type');
+                    return;
+                }
+                
+                agent.getModelConfigsInfo().then((configsInfo) => {
                     sendToConnection(connection, WebSocketMessageResponses.MODEL_CONFIGS_INFO, {
                         message: 'Model configurations retrieved',
                         configs: configsInfo
@@ -223,32 +238,4 @@ export function handleWebSocketMessage(agent: SimpleCodeGeneratorAgent, connecti
 
 export function handleWebSocketClose(connection: Connection): void {
     logger.info(`WebSocket connection closed: ${connection.id}`);
-}
-
-export function broadcastToConnections<T extends WebSocketMessageType>(
-    agent: { getWebSockets(): WebSocket[] },
-    type: T,
-    data: WebSocketMessageData<T>
-): void {
-    const connections = agent.getWebSockets();
-    for (const connection of connections) {
-        sendToConnection(connection, type, data);
-    }
-}
-
-export function sendToConnection<T extends WebSocketMessageType>(
-    connection: WebSocket, 
-    type: T, 
-    data: WebSocketMessageData<T>
-): void {
-    try {
-        const message: WebSocketMessage = { type, ...data } as WebSocketMessage;
-        connection.send(JSON.stringify(message));
-    } catch (error) {
-        console.error(`Error sending message to connection ${connection.url}:`, error);
-    }
-}
-
-export function sendError(connection: WebSocket, errorMessage: string): void {
-    sendToConnection(connection, 'error', { error: errorMessage });
 }

@@ -1,5 +1,5 @@
-import { Agent, AgentContext } from 'agents';
-import { GitVersionControl } from '../git';
+import { Connection, ConnectionContext } from 'agents';
+import { GitVersionControl, SqlExecutor } from '../git';
 import { StructuredLogger, createObjectLogger } from '../../logger';
 import { BaseProjectState } from './state';
 import { FileManager } from '../services/implementations/FileManager';
@@ -8,50 +8,59 @@ import { DeploymentManager } from '../services/implementations/DeploymentManager
 import { TemplateDetails, PreviewType, StaticAnalysisResponse, RuntimeError, ExecuteCommandsResponse, GitHubPushRequest } from '../../services/sandbox/sandboxTypes';
 import { FileOutputType, FileConceptType } from '../schemas';
 import { BaseSandboxService } from '../../services/sandbox/BaseSandboxService';
-import { broadcastToConnections } from './websocket';
+import { broadcastToConnections, sendToConnection } from './websocketBroadcast';
 import { WebSocketMessageResponses } from '../constants';
 import { WebSocketMessageType, WebSocketMessageData } from '../../api/websocketTypes';
 import { AppService } from '../../database';
 import { ProcessedImageAttachment } from '../../types/image-attachment';
-import { AgentSummary, DeepDebugResult } from './types';
+import { handleWebSocketMessage, handleWebSocketClose } from './websocket';
+import { AgentSummary, DeepDebugResult, ProjectType } from './types';
 import { RenderToolCall } from '../operations/UserConversationProcessor';
 import { PREVIEW_EXPIRED_ERROR } from '../constants';
 import { DeepCodeDebugger } from '../assistants/codeDebugger';
 import { BaseOperationOptions } from '../operations/common';
 import { updatePackageJson } from '../utils/packageSyncer';
-import { CodingAgentInterface } from '../services/implementations/CodingAgent';
-import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
 import { validateAndCleanBootstrapCommands } from '../utils/common';
 import { ConversationMessage, ConversationState } from '../inferutils/common';
 import { InferenceContext } from '../inferutils/config.types';
-import { IBaseAgent } from '../services/interfaces/IBaseAgent';
 import { GitHubExportResult, GitHubService } from 'worker/services/github';
 import { UserSecretsService } from 'worker/services/secrets/UserSecretsService';
+import { ICodingAgent } from '../services/interfaces/ICodingAgent';
+import { PluginManager, type AgentPlugin, type PluginHookParams } from './plugins';
+
+export type { AgentPlugin } from './plugins';
 
 const DEFAULT_CONVERSATION_SESSION_ID = 'default';
+
 /**
- * BaseProjectAgent - Common infrastructure for all project types
- * Implements IBaseAgent with universal methods only
+ * Infrastructure interface for agent implementations.
+ * Enables portability across different backends:
+ * - Durable Objects (current)
+ * - In-memory (testing)
+ * - Custom implementations
  */
-export abstract class BaseProjectAgent<TState extends BaseProjectState> 
-    extends Agent<Env, TState> implements IBaseAgent {
+export interface AgentInfrastructure<TState extends BaseProjectState = BaseProjectState> {
+    readonly state: TState;
+    setState(state: TState): void;
+    readonly sql: SqlExecutor;
+    getWebSockets(): WebSocket[];
+}
+
+/** Core agent implementation. Infrastructure-agnostic via IAgentBackend dependency. */
+export abstract class BaseProjectAgent<TState extends BaseProjectState> implements ICodingAgent {
     
-    // === Static Configuration ===
     protected static readonly MAX_COMMANDS_HISTORY = 10;
-    
-    // === Shared Core Infrastructure ===
+
+    protected env: Env;
     
     protected git: GitVersionControl;
     protected stateManager!: StateManager<TState>;
     protected fileManager!: FileManager;
     protected deploymentManager!: DeploymentManager;
-    // Note: codingAgent is NOT initialized here - subclasses initialize their specific interface type
-    // - SimpleCodeGeneratorAgent: AppBuilderAgentInterface
-    // - SimpleWorkflowGeneratorAgent: CodingAgentInterface
+    protected pluginManager!: PluginManager<TState>;
     
     public _logger: StructuredLogger | undefined;
     
-    // In-memory caches (ephemeral, lost on DO eviction)
     protected generationPromise: Promise<void> | null = null;
     protected currentAbortController?: AbortController;
     protected deepDebugPromise: Promise<{ transcript: string } | { error: string }> | null = null;
@@ -61,22 +70,46 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         username: string;
         expiresAt: number;
     } | null = null;
-    // In-memory storage for user-uploaded images (not persisted in DO state)
     protected pendingUserImages: ProcessedImageAttachment[] = []
     protected previewUrlCache: string = '';
     
-    constructor(ctx: AgentContext, env: Env) {
-        super(ctx, env);
+    protected readonly infrastructure: AgentInfrastructure<TState>;
+    private readonly _boundSql: SqlExecutor;
+    
+    constructor(env: Env, infrastructure: AgentInfrastructure<TState>) {
+        this.env = env;
+        this.infrastructure = infrastructure;
+        this._boundSql = this.infrastructure.sql.bind(this.infrastructure);
         
-        // Initialize SQL tables for conversations
         this.sql`CREATE TABLE IF NOT EXISTS full_conversations (id TEXT PRIMARY KEY, messages TEXT)`;
         this.sql`CREATE TABLE IF NOT EXISTS compact_conversations (id TEXT PRIMARY KEY, messages TEXT)`;
-        
-        // Initialize Git (bind sql to preserve 'this' context)
-        this.git = new GitVersionControl(this.sql.bind(this));
-        
-        // Initialize core managers
+        this.git = new GitVersionControl(this.sql);
         this.initializeManagers();
+        this.pluginManager = new PluginManager<TState>(this, this.logger());
+    }
+    
+    
+    get state(): TState {
+        return this.infrastructure.state;
+    }
+    
+    get sql(): SqlExecutor {
+        return this._boundSql;
+    }
+    
+    setState(state: TState): void {
+        this.infrastructure.setState(state);
+    }
+    
+    /**
+     * Update state with partial changes (type-safe)
+     */
+    updateState(updates: Partial<TState>): void {
+        this.setState({ ...this.state, ...updates } as TState);
+    }
+
+    getProjectType(): ProjectType {
+        return this.state.projectType;
     }
     
     async getFullState(): Promise<TState> {
@@ -218,8 +251,30 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         };
         return Promise.resolve(summaryData);
     }
-
-    // === Abstract Methods (must implement in subclasses) ===
+    
+    // Plugin System
+    async registerPlugin(plugin: AgentPlugin<TState>): Promise<void> {
+        await this.pluginManager.register(plugin);
+    }
+    
+    async unregisterPlugin(pluginName: string): Promise<void> {
+        await this.pluginManager.unregister(pluginName);
+    }
+    
+    getPlugin(pluginName: string): AgentPlugin<TState> | undefined {
+        return this.pluginManager.get(pluginName);
+    }
+    
+    getPlugins(): AgentPlugin<TState>[] {
+        return this.pluginManager.getAll();
+    }
+    
+    protected async executePluginHook<K extends keyof PluginHookParams<TState>>(
+        hookName: K,
+        ...args: PluginHookParams<TState>[K]
+    ): Promise<void> {
+        await this.pluginManager.executeHook(hookName, ...args);
+    }
     
     /**
      * Get user's Cloudflare credentials for workflow deployment
@@ -245,15 +300,10 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     // ==========================================
     
     /**
-     * Returns the project type for logging and routing
-     */
-    abstract getProjectType(): 'app' | 'workflow';
-    
-    /**
      * Get template details for FileManager
      * App agent caches this, workflow agent may return a synthesized template
      */
-    abstract getTemplateDetails(): TemplateDetails | null;
+    abstract getTemplateDetails(): TemplateDetails;
 
     abstract ensureTemplateDetails(): Promise<TemplateDetails>;
     
@@ -320,7 +370,7 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     }
 
     getWebSockets(): WebSocket[] {
-        return this.ctx.getWebSockets();
+        return this.infrastructure.getWebSockets();
     }
     
     // === Shared Git Operations ===
@@ -616,6 +666,8 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
         return false;
     }
 
+    abstract generateAllFiles(): Promise<void>;
+
     abstract generateReadme(): Promise<void>;
 
     // === ICodingAgent Implementation ===
@@ -694,6 +746,18 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
             this.logger().error('Failed to sync package.json from sandbox', error);
             // Non-critical error - don't throw, just log
         }
+    }
+
+    /**
+     * Deploy preview - convenience method for LLM tools
+     */
+    async deployPreview(clearLogs: boolean = true, forceRedeploy: boolean = false): Promise<string> {
+        const response = await this.deployToSandbox([], forceRedeploy, undefined, clearLogs);
+        if (response && response.previewURL) {
+            this.broadcast(WebSocketMessageResponses.PREVIEW_FORCE_REFRESH, {});
+            return `Deployment successful: ${response.previewURL}`;
+        }
+        return `Failed to deploy: ${response?.tunnelURL}`;
     }
 
     async deployToSandbox(files: FileOutputType[] = [], redeploy: boolean = false, commitMessage?: string, clearLogs: boolean = false): Promise<PreviewType | null> {
@@ -792,7 +856,7 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     async execCommands(commands: string[], shouldSave: boolean, timeout?: number): Promise<ExecuteCommandsResponse> {
         const { sandboxInstanceId } = this.state;
         if (!sandboxInstanceId) {
-            return { success: false, results: [], error: 'No sandbox instance' } as any;
+            return { success: false, results: [], error: 'No sandbox instance' };
         }
         const result = await this.getSandboxServiceClient().executeCommands(sandboxInstanceId, commands, timeout);
         if (shouldSave) {
@@ -932,6 +996,16 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
     }
     
     /**
+     * Queue request for user messages
+     */
+    queueRequest(request: string, images?: ProcessedImageAttachment[]): void {
+        // Fire and forget - don't await
+        this.queueUserRequest(request, images).catch(err => {
+            this.logger().error('Failed to queue user request:', err);
+        });
+    }
+
+    /**
      * Queue user request when agent is busy
      */
     async queueUserRequest(request: string, images?: ProcessedImageAttachment[]): Promise<void> {
@@ -1060,7 +1134,7 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
 
                 const out = await dbg.run(
                     { issue, previousTranscript },
-                    { filesIndex, agent: this.getAgentInterface(), runtimeErrors },
+                    { filesIndex, agent: this, runtimeErrors },
                     streamCb,
                     toolRenderer,
                 );
@@ -1092,11 +1166,34 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState>
      */
     abstract getOperationOptions(): BaseOperationOptions 
 
+    async isInitialized(): Promise<boolean> {
+        return this.getAgentId() ? true : false
+    }
+
+    // Lifecycle hooks - can be overridden by concrete agents
+    async onStart(_props?: Record<string, unknown>): Promise<void> {
+        // Override in concrete agents for initialization logic
+    }
+
+    onConnect(connection: Connection, ctx: ConnectionContext) {
+        this.logger().info(`Agent connected for agent ${this.getAgentId()}`, { connection, ctx });
+        sendToConnection(connection, 'agent_connected', {
+            state: this.state,
+            templateDetails: this.getTemplateDetails()
+        });
+    }
+
     /**
-     * Get agent interface for operations
-     * Hook for subclasses to return their specific wrapper
-     * - App: AppBuilderAgentInterface
-     * - Workflow: CodingAgentInterface
+     * Called when a WebSocket message is received.
      */
-    abstract getAgentInterface(): AppBuilderAgentInterface | CodingAgentInterface;
+    async onMessage(connection: Connection, message: string): Promise<void> {
+        handleWebSocketMessage(this, connection, message);
+    }
+    
+    /**
+     * Called when a WebSocket connection closes.
+     */
+    async onClose(connection: Connection): Promise<void> {
+        handleWebSocketClose(connection);
+    }
 }

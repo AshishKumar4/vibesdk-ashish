@@ -1,7 +1,7 @@
 
 import { SmartCodeGeneratorAgent } from './core/smartGeneratorAgent';
 import { getAgentByName } from 'agents';
-import { CodeGenState } from './core/state';
+import { CodeGenState, WorkflowGenState } from './core/state';
 import { generateId } from '../utils/idGenerator';
 import { StructuredLogger } from '../logger';
 import { InferenceContext } from './inferutils/config.types';
@@ -11,20 +11,23 @@ import { TemplateDetails } from '../services/sandbox/sandboxTypes';
 import { TemplateSelection } from './schemas';
 import type { ImageAttachment } from '../types/image-attachment';
 import { BaseSandboxService } from 'worker/services/sandbox/BaseSandboxService';
+import { ProjectType } from './core/types';
 
 export async function getAgentStub(env: Env, agentId: string) : Promise<DurableObjectStub<SmartCodeGeneratorAgent>> {
     return getAgentByName<Env, SmartCodeGeneratorAgent>(env.CodeGenObject, agentId);
 }
 
-export async function getAgentStubLightweight(env: Env, agentId: string) : Promise<DurableObjectStub<SmartCodeGeneratorAgent>> {
+export async function createAgent(env: Env, agentId: string, projectType: ProjectType): Promise<DurableObjectStub<SmartCodeGeneratorAgent>> {
+    // Always returns SmartCodeGeneratorAgent stub - the projectType is passed via props
+    // and the SmartCodeGeneratorAgent constructor routes to the appropriate concrete agent
     return getAgentByName<Env, SmartCodeGeneratorAgent>(env.CodeGenObject, agentId, {
-        // props: { readOnlyMode: true }
+        props: { projectType }
     });
 }
 
-export async function getAgentState(env: Env, agentId: string) : Promise<CodeGenState> {
+export async function getAgentState(env: Env, agentId: string) : Promise<CodeGenState | WorkflowGenState> {
     const agentInstance = await getAgentStub(env, agentId);
-    return await agentInstance.getFullState() as CodeGenState;
+    return await agentInstance.getFullState() as CodeGenState | WorkflowGenState;
 }
 
 export async function cloneAgent(env: Env, agentId: string) : Promise<{newAgentId: string, newAgent: DurableObjectStub<SmartCodeGeneratorAgent>}> {
@@ -33,9 +36,10 @@ export async function cloneAgent(env: Env, agentId: string) : Promise<{newAgentI
         throw new Error(`Agent ${agentId} not found`);
     }
     const newAgentId = generateId();
+    const projectType = await agentInstance.getProjectType();
 
-    const newAgent = await getAgentStub(env, newAgentId);
-    const originalState = await agentInstance.getFullState() as CodeGenState;
+    const newAgent = await createAgent(env, newAgentId, projectType);
+    const originalState = await agentInstance.getFullState();
     const newState = {
         ...originalState,
         sessionId: newAgentId,
@@ -44,9 +48,8 @@ export async function cloneAgent(env: Env, agentId: string) : Promise<{newAgentI
         currentDevState: 0,
         generationPromise: undefined,
         shouldBeGenerating: false,
-        // latestScreenshot: undefined,
         clientReportedErrors: [],
-    };
+    } as CodeGenState | WorkflowGenState;
 
     await newAgent.setState(newState);
     return {newAgentId, newAgent};

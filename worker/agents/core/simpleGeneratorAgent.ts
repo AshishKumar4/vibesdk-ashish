@@ -1,4 +1,4 @@
-import { AgentContext, Connection, ConnectionContext } from 'agents';
+
 import { 
     Blueprint, 
     PhaseConceptGenerationSchemaType, 
@@ -35,17 +35,14 @@ import { AppService } from '../../database';
 import { RateLimitExceededError } from 'shared/types/errors';
 import { ImageAttachment, type ProcessedImageAttachment } from '../../types/image-attachment';
 import { OperationOptions } from '../operations/common';
-import { CodingAgentInterface } from '../services/implementations/CodingAgent';
 import { ImageType, uploadImage } from 'worker/utils/images';
 import { ConversationMessage } from '../inferutils/common';
 import { StateMigration } from './stateMigration';
 import { generateNanoId } from 'worker/utils/idGenerator';
 import { IdGenerator } from '../utils/idGenerator';
 import { PhasicGenerationContext } from '../domain/values/GenerationContext';
-import { BaseProjectAgent } from './baseProjectAgent';
-import { handleWebSocketClose, handleWebSocketMessage, sendToConnection } from './websocket';
+import { BaseProjectAgent, type AgentInfrastructure } from './baseProjectAgent';
 import { IAppBuilderAgent } from '../services/interfaces/IAppBuilderAgent';
-import { AppBuilderAgentInterface } from '../services/implementations/AppBuilderAgentInterface';
 
 interface Operations {
     regenerateFile: FileRegenerationOperation;
@@ -56,20 +53,11 @@ interface Operations {
     processUserMessage: UserConversationProcessor;
 }
 
-/**
- * SimpleCodeGeneratorAgent - Deterministically orchestrated agent
- * 
- * Manages the lifecycle of code generation including:
- * - Blueprint, phase generation, phase implementation, review cycles orchestrations
- * - File streaming with WebSocket updates
- * - Code validation and error correction
- * - Deployment to sandbox service
- */
+/** App project agent: blueprint → phases → implementation → deployment. */
 export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> implements IAppBuilderAgent {
     private static readonly PROJECT_NAME_PREFIX_MAX_LENGTH = 20;
 
     protected projectSetupAssistant: ProjectSetupAssistant | undefined;
-    protected codingAgent = new AppBuilderAgentInterface(this);
 
     private templateDetailsCache: TemplateDetails | null = null;
     
@@ -86,7 +74,8 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         return 'app';
     }
 
-    initialState: CodeGenState = {
+    static readonly INITIAL_STATE: CodeGenState = {
+        projectType: 'app',
         blueprint: {} as Blueprint, 
         projectName: "",
         query: "",
@@ -111,14 +100,10 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         lastDeepDebugTranscript: null,
     };
 
-    constructor(ctx: AgentContext, env: Env) {
-        super(ctx, env);
+    constructor(env: Env, infrastructure: AgentInfrastructure<CodeGenState>) {
+        super(env, infrastructure);
     }
 
-    /**
-     * Initialize the code generator with project blueprint and template
-     * Sets up services and begins deployment process
-     */
     async initialize(
         initArgs: AppAgentInitArgs,
         ..._args: unknown[]
@@ -163,7 +148,7 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         this.logger().info('Generated project name', { projectName });
         
         this.setState({
-            ...this.initialState,
+            ...SimpleCodeGeneratorAgent.INITIAL_STATE,
             projectName,
             query,
             blueprint,
@@ -230,10 +215,6 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         }
     }
 
-    async isInitialized() {
-        return this.getAgentId() ? true : false
-    }
-
     async onStart(props?: Record<string, unknown> | undefined): Promise<void> {
         this.logger().info(`Agent ${this.getAgentId()} session: ${this.state.sessionId} onStart`, { props });
         
@@ -274,8 +255,6 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         await this.ensureTemplateDetails();
         this.logger().info(`Agent ${this.getAgentId()} session: ${this.state.sessionId} onStart processed successfully`);
     }
-    
-    onStateUpdate(_state: CodeGenState, _source: "server" | Connection) {}
 
     setState(state: CodeGenState): void {
         try {
@@ -287,14 +266,6 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
                 newState: JSON.stringify(state, null, 2)
             });
         }
-    }
-
-    onConnect(connection: Connection, ctx: ConnectionContext) {
-        this.logger().info(`Agent connected for agent ${this.getAgentId()}`, { connection, ctx });
-        sendToConnection(connection, 'agent_connected', {
-            state: this.state,
-            templateDetails: this.getTemplateDetails()
-        });
     }
 
     async ensureTemplateDetails() {
@@ -435,12 +406,8 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
             context: this.buildProjectContext(),
             logger: this.logger(),
             inferenceContext: this.getInferenceContext(),
-            agent: this.codingAgent
+            agent: this
         };
-    }
-
-    getAgentInterface(): CodingAgentInterface {
-        return this.codingAgent;
     }
 
     protected buildProjectContext(): PhasicGenerationContext {
@@ -1353,14 +1320,6 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
                 diff: (f as any).lastDiff || '' // FileState has lastDiff
             }))
         };
-    }
-    
-    async onMessage(connection: Connection, message: string): Promise<void> {
-        handleWebSocketMessage(this, connection, message);
-    }
-
-    async onClose(connection: Connection): Promise<void> {
-        handleWebSocketClose(connection);
     }
 
     private async onProjectUpdate(message: string): Promise<void> {

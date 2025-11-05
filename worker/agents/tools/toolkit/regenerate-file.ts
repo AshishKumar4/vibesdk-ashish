@@ -1,6 +1,6 @@
 import { ToolDefinition, ErrorResult } from '../types';
 import { StructuredLogger } from '../../../logger';
-import { AppBuilderAgentInterface } from 'worker/agents/services/implementations/AppBuilderAgent';
+import type { IAppBuilderAgent } from 'worker/agents/services/interfaces/IAppBuilderAgent';
 
 export type RegenerateFileArgs = {
 	path: string;
@@ -12,7 +12,7 @@ export type RegenerateFileResult =
 	| ErrorResult;
 
 export function createRegenerateFileTool(
-	agent: AppBuilderAgentInterface,
+	agent: IAppBuilderAgent,
 	logger: StructuredLogger,
 ): ToolDefinition<RegenerateFileArgs, RegenerateFileResult> {
 	return {
@@ -38,7 +38,7 @@ CRITICAL: Provide detailed, specific issues - not vague descriptions. See system
 					path,
 					issuesCount: issues.length,
 				});
-				return await agent.regenerateFile(path, issues);
+				return await agent.regenerateFileByPath(path, issues);
 			} catch (error) {
 				return {
 					error:
