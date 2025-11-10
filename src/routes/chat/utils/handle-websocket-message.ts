@@ -1,5 +1,6 @@
 import type { WebSocket } from 'partysocket';
-import type { WebSocketMessage, BlueprintType, ConversationMessage } from '@/api-types';
+import type { WebSocketMessage, BlueprintType, ConversationMessage, CodeGenState, ProjectType } from '@/api-types';
+import { createProjectAdapter, type IProjectAdapter } from '../adapters';
 import { deduplicateMessages, isAssistantMessageDuplicate } from './deduplicate-messages';
 import { logger } from '@/utils/logger';
 import { getFileType } from '@/utils/string';
@@ -47,9 +48,13 @@ export interface HandleMessageDeps {
     setRuntimeErrorCount: React.Dispatch<React.SetStateAction<number>>;
     setStaticIssueCount: React.Dispatch<React.SetStateAction<number>>;
     setIsDebugging: React.Dispatch<React.SetStateAction<boolean>>;
+    setProjectType: React.Dispatch<React.SetStateAction<ProjectType | undefined>>;
+    setProjectAdapter: React.Dispatch<React.SetStateAction<IProjectAdapter | undefined>>;
     
     // Current state
     isInitialStateRestored: boolean;
+    projectType: ProjectType | undefined;
+    projectAdapter: IProjectAdapter | undefined;
     blueprint: BlueprintType | undefined;
     query: string | undefined;
     bootstrapFiles: FileType[];
@@ -115,7 +120,11 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
             setIsGenerating,
             setIsPhaseProgressActive,
             setIsDebugging,
+            setProjectType,
+            setProjectAdapter,
             isInitialStateRestored,
+            // projectType,
+            projectAdapter,
             blueprint,
             query,
             bootstrapFiles,
@@ -157,11 +166,21 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                 const { state, templateDetails } = message;
                 console.log('Agent connected', state, templateDetails);
                 
+                // Initialize project adapter if not already set
+                if (!projectAdapter && state.projectType) {
+                    logger.info('🎭 Creating project adapter for type:', state.projectType);
+                    const adapter = createProjectAdapter(state.projectType);
+                    setProjectType(state.projectType);
+                    setProjectAdapter(adapter);
+                }
+                
                 if (!isInitialStateRestored) {
                     logger.debug('📥 Performing initial state restoration');
                     
-                    if (state.blueprint && !blueprint) {
-                        setBlueprint(state.blueprint);
+                    // Check if state has blueprint (CodeGenState specific)
+                    if ('blueprint' in state && state.blueprint && !blueprint) {
+                        const codeGenState = state as CodeGenState;
+                        setBlueprint(codeGenState.blueprint);
                         updateStage('blueprint', { status: 'completed' });
                     }
 
@@ -191,12 +210,14 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                         );
                     }
 
-                    if (state.generatedPhases && state.generatedPhases.length > 0 && phaseTimeline.length === 0) {
-                        logger.debug('📋 Restoring phase timeline:', state.generatedPhases);
+                    // Check if state has generatedPhases (CodeGenState specific)
+                    if ('generatedPhases' in state && state.generatedPhases && phaseTimeline.length === 0) {
+                        const codeGenState = state as CodeGenState;
+                        logger.debug('📋 Restoring phase timeline:', codeGenState.generatedPhases);
                         // If not actively generating, mark incomplete phases as cancelled (they were interrupted)
                         const isActivelyGenerating = state.shouldBeGenerating === true;
                         
-                        const timeline = state.generatedPhases.map((phase: any, index: number) => {
+                        const timeline = codeGenState.generatedPhases.map((phase: any, index: number) => {
                             // Determine phase status:
                             // - completed if explicitly marked complete
                             // - cancelled if incomplete and not actively generating (interrupted)
@@ -238,7 +259,8 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                     
                     updateStage('bootstrap', { status: 'completed' });
                     
-                    if (state.blueprint) {
+                    // Check if state has blueprint (CodeGenState specific)
+                    if ('blueprint' in state && state.blueprint) {
                         updateStage('blueprint', { status: 'completed' });
                     }
                     
@@ -251,6 +273,13 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                     }
 
                     setIsInitialStateRestored(true);
+                    
+                    if (state.shouldBeGenerating && !isGenerating) {
+                        logger.debug('🔄 Reconnected with shouldBeGenerating=true, auto-resuming generation');
+                        setIsGenerating(true); 
+                        updateStage('code', { status: 'active' });
+                        sendWebSocketMessage(websocket, 'generate_all');
+                    }
                 }
                 break;
             }
@@ -258,13 +287,10 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                 const { state } = message;
                 logger.debug('🔄 Agent state update received:', state);
 
-                if (state.shouldBeGenerating) {
-                    logger.debug('🔄 shouldBeGenerating=true detected, auto-resuming generation');
+                if (state.shouldBeGenerating && !isGenerating) {
+                    logger.debug('🔄 shouldBeGenerating=true, updating UI to active state');
                     updateStage('code', { status: 'active' });
-                    
-                    logger.debug('📡 Sending auto-resume generate_all message');
-                    sendWebSocketMessage(websocket, 'generate_all');
-                } else {
+                } else if (!state.shouldBeGenerating) {
                     const codeStage = projectStages.find((stage: any) => stage.id === 'code');
                     if (codeStage?.status === 'active' && !isGenerating) {
                         if (state.generatedFilesMap && Object.keys(state.generatedFilesMap).length > 0) {
@@ -684,6 +710,23 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                 setIsPhaseProgressActive(false);
                 setIsThinking(false);
                 
+                // Mark any active phases as cancelled (not completed, since they were interrupted)
+                setPhaseTimeline((prev) => 
+                    prev.map(phase => 
+                        (phase.status === 'generating' || phase.status === 'validating')
+                            ? { 
+                                ...phase, 
+                                status: 'cancelled' as const,
+                                files: phase.files.map(file => 
+                                    file.status === 'generating' || file.status === 'validating'
+                                        ? { ...file, status: 'cancelled' as const }
+                                        : file
+                                )
+                            }
+                            : phase
+                    )
+                );
+                
                 // Show toast notification for user-initiated stop
                 toast.info('Generation stopped', {
                     description: message.message || 'Code generation has been stopped'
@@ -868,7 +911,180 @@ export function createWebSocketMessageHandler(deps: HandleMessageDeps) {
                     onDebugMessage
                 );
                 setMessages(prev => [...prev, rateLimitMessage]);
+                break;
+            }
+
+            case 'command_executing': {
+                sendMessage(createAIMessage('command_executing', message.message));
+                onDebugMessage?.('info',
+                    'Command Execution Started',
+                    `Commands: ${message.commands.join(', ')}`,
+                    'Command Execution'
+                );
+                break;
+            }
+
+            case 'command_executed': {
+                sendMessage(createAIMessage('command_executed', message.message));
+                onDebugMessage?.('info',
+                    'Command Execution Completed',
+                    `Commands: ${message.commands.join(', ')}\nOutput: ${message.output || 'N/A'}`,
+                    'Command Execution'
+                );
+                break;
+            }
+
+            case 'command_execution_failed': {
+                sendMessage(createAIMessage('command_execution_failed', `❌ ${message.message}`));
+                onDebugMessage?.('error',
+                    'Command Execution Failed',
+                    `Commands: ${message.commands.join(', ')}\nError: ${message.error || 'Unknown error'}`,
+                    'Command Execution'
+                );
+                break;
+            }
+
+            case 'static_analysis_results': {
+                const lintIssues = message.staticAnalysis?.lint?.issues?.length || 0;
+                const typecheckIssues = message.staticAnalysis?.typecheck?.issues?.length || 0;
+                const totalIssues = lintIssues + typecheckIssues;
+
+                deps.setStaticIssueCount(totalIssues);
+
+                if (totalIssues > 0) {
+                    onDebugMessage?.('warning',
+                        `Static Analysis: ${totalIssues} issues found`,
+                        `Lint: ${lintIssues}, Type: ${typecheckIssues}`,
+                        'Static Analysis'
+                    );
+                }
+                break;
+            }
+
+            case 'screenshot_capture_started': {
+                onDebugMessage?.('info',
+                    'Screenshot Capture Started',
+                    `URL: ${message.url}\nViewport: ${message.viewport.width}x${message.viewport.height}`,
+                    'Screenshot Capture'
+                );
+                break;
+            }
+
+            case 'screenshot_capture_success': {
+                onDebugMessage?.('info',
+                    'Screenshot Captured Successfully',
+                    `URL: ${message.url}\nSize: ${message.screenshotSize} bytes\nTimestamp: ${message.timestamp}`,
+                    'Screenshot Capture'
+                );
+                break;
+            }
+
+            case 'screenshot_capture_error': {
+                onDebugMessage?.('error',
+                    'Screenshot Capture Failed',
+                    `URL: ${message.url}\nError: ${message.error}\nStatus: ${message.statusCode || 'N/A'}`,
+                    'Screenshot Capture'
+                );
+                break;
+            }
+
+            case 'screenshot_analysis_result': {
+                const analysis = message.analysis;
+                if (analysis.hasIssues) {
+                    sendMessage(createAIMessage('screenshot_analysis', 
+                        `Screenshot analysis found ${analysis.issues.length} issue(s):\n${analysis.issues.map(i => `• ${i}`).join('\n')}`
+                    ));
+                }
                 
+                onDebugMessage?.('info',
+                    'Screenshot Analysis Complete',
+                    `Has Issues: ${analysis.hasIssues}\nIssues: ${analysis.issues.join(', ')}\nBlueprint Match: ${analysis.uiCompliance.matchesBlueprint}`,
+                    'Screenshot Analysis'
+                );
+                break;
+            }
+
+            case 'user_suggestions_processing': {
+                sendMessage(createAIMessage('user_suggestions', 
+                    `Processing ${message.suggestions.length} suggestion(s)...`
+                ));
+                break;
+            }
+
+            case 'project_name_updated': {
+                sendMessage(createAIMessage('project_name_updated', message.message));
+                onDebugMessage?.('info',
+                    'Project Name Updated',
+                    `New name: ${message.projectName}`,
+                    'Project Configuration'
+                );
+                break;
+            }
+
+            case 'blueprint_updated': {
+                sendMessage(createAIMessage('blueprint_updated', message.message));
+                onDebugMessage?.('info',
+                    'Blueprint Updated',
+                    `Updated keys: ${message.updatedKeys.join(', ')}`,
+                    'Blueprint Management'
+                );
+                break;
+            }
+
+            case 'deterministic_code_fix_started': {
+                sendMessage(createAIMessage('code_fix_started', 
+                    `Starting deterministic fix for ${message.issues.length} issue(s)...`
+                ));
+                onDebugMessage?.('info',
+                    'Deterministic Code Fix Started',
+                    `Issues: ${message.issues.length}`,
+                    'Code Fixing'
+                );
+                break;
+            }
+
+            case 'deterministic_code_fix_completed': {
+                const result = message.fixResult;
+                const fixedCount = result.fixedIssues.length;
+                const unfixableCount = result.unfixableIssues.length;
+                
+                sendMessage(createAIMessage('code_fix_completed', 
+                    `Code fix completed: ${fixedCount} issue(s) fixed, ${unfixableCount} remaining`
+                ));
+                
+                // Trigger preview refresh if files were fixed
+                if (fixedCount > 0) {
+                    setIsRedeployReady(true);
+                }
+                
+                onDebugMessage?.('info',
+                    'Deterministic Code Fix Completed',
+                    `Fixed: ${fixedCount}, Unfixable: ${unfixableCount}`,
+                    'Code Fixing'
+                );
+                break;
+            }
+
+            case 'model_configs_info': {
+                onDebugMessage?.('info',
+                    'Model Configuration Info Received',
+                    `Agents: ${message.configs.agents.length}`,
+                    'Model Configuration'
+                );
+                break;
+            }
+
+            case 'terminal_command': {
+                // Handle terminal command messages
+                if (onTerminalMessage) {
+                    const commandLog = {
+                        id: `cmd-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`,
+                        content: message.command,
+                        type: 'command' as const,
+                        timestamp: message.timestamp
+                    };
+                    onTerminalMessage(commandLog);
+                }
                 break;
             }
 

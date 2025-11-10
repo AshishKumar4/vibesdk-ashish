@@ -466,6 +466,8 @@ class ApiClient {
 	async createApp(data: {
 		title: string;
 		description?: string;
+		projectType?: 'app' | 'workflow';
+		deploymentTarget?: 'platform' | 'self-hosted';
 	}): Promise<ApiResponse<CreateAppData>> {
 		return this.request<CreateAppData>('/api/apps', {
 			method: 'POST',

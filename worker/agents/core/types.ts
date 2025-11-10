@@ -8,19 +8,44 @@ import { TemplateSelection } from '../schemas';
 import { CurrentDevState } from './state';
 import { ProcessedImageAttachment } from 'worker/types/image-attachment';
 
-export interface AgentInitArgs {
+export type ProjectType = 'app' | 'workflow';
+
+/**
+ * Base initialization arguments shared by all agent types
+ */
+export interface BaseAgentInitArgs {
     query: string;
-    language?: string;
-    frameworks?: string[];
     hostname: string;
     inferenceContext: InferenceContext;
+}
+
+/**
+ * App-specific initialization arguments
+ */
+export interface AppAgentInitArgs extends BaseAgentInitArgs {
+    projectType: 'app';
+    language?: string;
+    frameworks?: string[];
     templateInfo: {
         templateDetails: TemplateDetails;
         selection: TemplateSelection;
-    }
+    };
     images?: ProcessedImageAttachment[];
     onBlueprintChunk: (chunk: string) => void;
+    agentMode?: 'deterministic' | 'smart';
 }
+
+/**
+ * Workflow-specific initialization arguments
+ */
+export interface WorkflowAgentInitArgs extends BaseAgentInitArgs {
+    projectType: 'workflow';
+}
+
+/**
+ * Discriminated union of all agent initialization types
+ */
+export type AgentInitArgs = AppAgentInitArgs | WorkflowAgentInitArgs;
 
 export interface AllIssues {
     runtimeErrors: RuntimeError[];

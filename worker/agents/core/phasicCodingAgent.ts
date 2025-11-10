@@ -1,4 +1,4 @@
-import { Agent, AgentContext, Connection, ConnectionContext } from 'agents';
+
 import { 
     Blueprint, 
     PhaseConceptGenerationSchemaType, 
@@ -7,21 +7,14 @@ import {
     FileOutputType,
     PhaseImplementationSchemaType,
 } from '../schemas';
-import { ExecuteCommandsResponse, GitHubPushRequest, PreviewType, StaticAnalysisResponse, TemplateDetails } from '../../services/sandbox/sandboxTypes';
-import {  GitHubExportResult } from '../../services/github/types';
-import { GitHubService } from '../../services/github/GitHubService';
+import { StaticAnalysisResponse, TemplateDetails } from '../../services/sandbox/sandboxTypes';
 import { CodeGenState, CurrentDevState, MAX_PHASES } from './state';
-import { AllIssues, AgentSummary, AgentInitArgs, PhaseExecutionResult, UserContext } from './types';
-import { PREVIEW_EXPIRED_ERROR, WebSocketMessageResponses } from '../constants';
-import { broadcastToConnections, handleWebSocketClose, handleWebSocketMessage, sendToConnection } from './websocket';
-import { createObjectLogger, StructuredLogger } from '../../logger';
+import { AllIssues, AppAgentInitArgs, PhaseExecutionResult, UserContext } from './types';
+import { WebSocketMessageResponses } from '../constants';
 import { ProjectSetupAssistant } from '../assistants/projectsetup';
-import { UserConversationProcessor, RenderToolCall } from '../operations/UserConversationProcessor';
-import { FileManager } from '../services/implementations/FileManager';
-import { StateManager } from '../services/implementations/StateManager';
+import { UserConversationProcessor } from '../operations/UserConversationProcessor';
 import { DeploymentManager } from '../services/implementations/DeploymentManager';
 // import { WebSocketBroadcaster } from '../services/implementations/WebSocketBroadcaster';
-import { GenerationContext } from '../domain/values/GenerationContext';
 import { IssueReport } from '../domain/values/IssueReport';
 import { PhaseImplementationOperation } from '../operations/PhaseImplementation';
 import { FileRegenerationOperation } from '../operations/FileRegeneration';
@@ -34,24 +27,22 @@ import { InferenceContext, AgentActionKey } from '../inferutils/config.types';
 import { AGENT_CONFIG } from '../inferutils/config';
 import { ModelConfigService } from '../../database/services/ModelConfigService';
 import { fixProjectIssues } from '../../services/code-fixer';
-import { GitVersionControl } from '../git';
 import { FastCodeFixerOperation } from '../operations/PostPhaseCodeFixer';
-import { looksLikeCommand, validateAndCleanBootstrapCommands } from '../utils/common';
+import { looksLikeCommand } from '../utils/common';
 import { customizePackageJson, customizeTemplateFiles, generateBootstrapScript, generateProjectName } from '../utils/templateCustomizer';
 import { generateBlueprint } from '../planning/blueprint';
 import { AppService } from '../../database';
 import { RateLimitExceededError } from 'shared/types/errors';
 import { ImageAttachment, type ProcessedImageAttachment } from '../../types/image-attachment';
 import { OperationOptions } from '../operations/common';
-import { CodingAgentInterface } from '../services/implementations/CodingAgent';
 import { ImageType, uploadImage } from 'worker/utils/images';
-import { ConversationMessage, ConversationState } from '../inferutils/common';
-import { DeepCodeDebugger } from '../assistants/codeDebugger';
-import { DeepDebugResult } from './types';
+import { ConversationMessage } from '../inferutils/common';
 import { StateMigration } from './stateMigration';
 import { generateNanoId } from 'worker/utils/idGenerator';
-import { updatePackageJson } from '../utils/packageSyncer';
 import { IdGenerator } from '../utils/idGenerator';
+import { PhasicGenerationContext } from '../domain/values/GenerationContext';
+import { BaseProjectAgent, type AgentInfrastructure } from './baseProjectAgent';
+import { IAppBuilderAgent } from '../services/interfaces/IAppBuilderAgent';
 
 interface Operations {
     regenerateFile: FileRegenerationOperation;
@@ -62,46 +53,16 @@ interface Operations {
     processUserMessage: UserConversationProcessor;
 }
 
-const DEFAULT_CONVERSATION_SESSION_ID = 'default';
-
-/**
- * SimpleCodeGeneratorAgent - Deterministically orchestrated agent
- * 
- * Manages the lifecycle of code generation including:
- * - Blueprint, phase generation, phase implementation, review cycles orchestrations
- * - File streaming with WebSocket updates
- * - Code validation and error correction
- * - Deployment to sandbox service
+/** 
+ * Phasic Coding Agent: Deterministic blueprint → phases → implementation → deployment.
+ * Used for app projects with structured phase-based generation.
  */
-export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
-    private static readonly MAX_COMMANDS_HISTORY = 10;
+export class PhasicCodingAgent extends BaseProjectAgent<CodeGenState> implements IAppBuilderAgent {
     private static readonly PROJECT_NAME_PREFIX_MAX_LENGTH = 20;
 
     protected projectSetupAssistant: ProjectSetupAssistant | undefined;
-    protected stateManager!: StateManager;
-    protected fileManager!: FileManager;
-    protected codingAgent: CodingAgentInterface = new CodingAgentInterface(this);
-    
-    protected deploymentManager!: DeploymentManager;
-    protected git: GitVersionControl;
 
-    private previewUrlCache: string = '';
     private templateDetailsCache: TemplateDetails | null = null;
-    
-    // In-memory storage for user-uploaded images (not persisted in DO state)
-    private pendingUserImages: ProcessedImageAttachment[] = []
-    private generationPromise: Promise<void> | null = null;
-    private currentAbortController?: AbortController;
-    private deepDebugPromise: Promise<{ transcript: string } | { error: string }> | null = null;
-    private deepDebugConversationId: string | null = null;
-    
-    // GitHub token cache (ephemeral, lost on DO eviction)
-    private githubTokenCache: {
-        token: string;
-        username: string;
-        expiresAt: number;
-    } | null = null;
-    
     
     protected operations: Operations = {
         regenerateFile: new FileRegenerationOperation(),
@@ -111,32 +72,13 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         fastCodeFixer: new FastCodeFixerOperation(),
         processUserMessage: new UserConversationProcessor()
     };
-    
-    public _logger: StructuredLogger | undefined;
 
-    private initLogger(agentId: string, sessionId: string, userId: string) {
-        this._logger = createObjectLogger(this, 'CodeGeneratorAgent');
-        this._logger.setObjectId(agentId);
-        this._logger.setFields({
-            sessionId,
-            agentId,
-            userId,
-        });
-        return this._logger;
+    getProjectType(): 'app' | 'workflow' {
+        return 'app';
     }
 
-    logger(): StructuredLogger {
-        if (!this._logger) {
-            this._logger = this.initLogger(this.getAgentId(), this.state.sessionId, this.state.inferenceContext.userId);
-        }
-        return this._logger;
-    }
-
-    getAgentId() {
-        return this.state.inferenceContext.agentId;
-    }
-
-    initialState: CodeGenState = {
+    static readonly INITIAL_STATE: CodeGenState = {
+        projectType: 'app',
         blueprint: {} as Blueprint, 
         projectName: "",
         query: "",
@@ -161,42 +103,12 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         lastDeepDebugTranscript: null,
     };
 
-    constructor(ctx: AgentContext, env: Env) {
-        super(ctx, env);
-        this.sql`CREATE TABLE IF NOT EXISTS full_conversations (id TEXT PRIMARY KEY, messages TEXT)`;
-        this.sql`CREATE TABLE IF NOT EXISTS compact_conversations (id TEXT PRIMARY KEY, messages TEXT)`;
-        
-        // Initialize StateManager
-        this.stateManager = new StateManager(
-            () => this.state,
-            (s) => this.setState(s)
-        );
-
-        // Initialize GitVersionControl (bind sql to preserve 'this' context)
-        this.git = new GitVersionControl(this.sql.bind(this));
-
-        // Initialize FileManager
-        this.fileManager = new FileManager(this.stateManager, () => this.getTemplateDetails(), this.git);
-        
-        // Initialize DeploymentManager first (manages sandbox client caching)
-        // DeploymentManager will use its own getClient() override for caching
-        this.deploymentManager = new DeploymentManager(
-            {
-                stateManager: this.stateManager,
-                fileManager: this.fileManager,
-                getLogger: () => this.logger(),
-                env: this.env
-            },
-            SimpleCodeGeneratorAgent.MAX_COMMANDS_HISTORY
-        );
+    constructor(env: Env, infrastructure: AgentInfrastructure<CodeGenState>) {
+        super(env, infrastructure);
     }
 
-    /**
-     * Initialize the code generator with project blueprint and template
-     * Sets up services and begins deployment process
-     */
     async initialize(
-        initArgs: AgentInitArgs,
+        initArgs: AppAgentInitArgs,
         ..._args: unknown[]
     ): Promise<CodeGenState> {
 
@@ -233,13 +145,13 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         const projectName = generateProjectName(
             blueprint?.projectName || templateInfo.templateDetails.name,
             generateNanoId(),
-            SimpleCodeGeneratorAgent.PROJECT_NAME_PREFIX_MAX_LENGTH
+            PhasicCodingAgent.PROJECT_NAME_PREFIX_MAX_LENGTH
         );
         
         this.logger().info('Generated project name', { projectName });
         
         this.setState({
-            ...this.initialState,
+            ...PhasicCodingAgent.INITIAL_STATE,
             projectName,
             query,
             blueprint,
@@ -306,10 +218,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         }
     }
 
-    async isInitialized() {
-        return this.getAgentId() ? true : false
-    }
-
     async onStart(props?: Record<string, unknown> | undefined): Promise<void> {
         this.logger().info(`Agent ${this.getAgentId()} session: ${this.state.sessionId} onStart`, { props });
         
@@ -351,31 +259,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         this.logger().info(`Agent ${this.getAgentId()} session: ${this.state.sessionId} onStart processed successfully`);
     }
 
-    private async gitInit() {
-        try {
-            await this.git.init();
-            this.logger().info("Git initialized successfully");
-            // Check if there is any commit
-            const head = await this.git.getHead();
-            
-            if (!head) {
-                this.logger().info("No commits found, creating initial commit");
-                // get all generated files and commit them
-                const generatedFiles = this.fileManager.getGeneratedFiles();
-                if (generatedFiles.length === 0) {
-                    this.logger().info("No generated files found, skipping initial commit");
-                    return;
-                }
-                await this.git.commit(generatedFiles, "Initial commit");
-                this.logger().info("Initial commit created successfully");
-            }
-        } catch (error) {
-            this.logger().error("Error during git init:", error);
-        }
-    }
-    
-    onStateUpdate(_state: CodeGenState, _source: "server" | Connection) {}
-
     setState(state: CodeGenState): void {
         try {
             super.setState(state);
@@ -386,14 +269,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
                 newState: JSON.stringify(state, null, 2)
             });
         }
-    }
-
-    onConnect(connection: Connection, ctx: ConnectionContext) {
-        this.logger().info(`Agent connected for agent ${this.getAgentId()}`, { connection, ctx });
-        sendToConnection(connection, 'agent_connected', {
-            state: this.state,
-            templateDetails: this.getTemplateDetails()
-        });
     }
 
     async ensureTemplateDetails() {
@@ -427,7 +302,7 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         return this.templateDetailsCache;
     }
 
-    private getTemplateDetails(): TemplateDetails {
+    public getTemplateDetails(): TemplateDetails {
         if (!this.templateDetailsCache) {
             this.ensureTemplateDetails();
             throw new Error('Template details not loaded. Call ensureTemplateDetails() first.');
@@ -465,100 +340,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         });
     }
 
-    /*
-    * Each DO has 10 gb of sqlite storage. However, the way agents sdk works, it stores the 'state' object of the agent as a single row
-    * in the cf_agents_state table. And row size has a much smaller limit in sqlite. Thus, we only keep current compactified conversation
-    * in the agent's core state and store the full conversation in a separate DO table.
-    */
-    getConversationState(id: string = DEFAULT_CONVERSATION_SESSION_ID): ConversationState {
-        const currentConversation = this.state.conversationMessages;
-        const rows = this.sql<{ messages: string, id: string }>`SELECT * FROM full_conversations WHERE id = ${id}`;
-        let fullHistory: ConversationMessage[] = [];
-        if (rows.length > 0 && rows[0].messages) {
-            try {
-                const parsed = JSON.parse(rows[0].messages);
-                if (Array.isArray(parsed)) {
-                    fullHistory = parsed as ConversationMessage[];
-                }
-            } catch (_e) {}
-        }
-        if (fullHistory.length === 0) {
-            fullHistory = currentConversation;
-        }
-        // Load compact (running) history from sqlite with fallback to in-memory state for migration
-        const compactRows = this.sql<{ messages: string, id: string }>`SELECT * FROM compact_conversations WHERE id = ${id}`;
-        let runningHistory: ConversationMessage[] = [];
-        if (compactRows.length > 0 && compactRows[0].messages) {
-            try {
-                const parsed = JSON.parse(compactRows[0].messages);
-                if (Array.isArray(parsed)) {
-                    runningHistory = parsed as ConversationMessage[];
-                }
-            } catch (_e) {}
-        }
-        if (runningHistory.length === 0) {
-            runningHistory = currentConversation;
-        }
-
-        // Remove duplicates
-        const deduplicateMessages = (messages: ConversationMessage[]): ConversationMessage[] => {
-            const seen = new Set<string>();
-            return messages.filter(msg => {
-                if (seen.has(msg.conversationId)) {
-                    return false;
-                }
-                seen.add(msg.conversationId);
-                return true;
-            });
-        };
-
-        runningHistory = deduplicateMessages(runningHistory);
-        fullHistory = deduplicateMessages(fullHistory);
-        
-        return {
-            id: id,
-            runningHistory,
-            fullHistory,
-        };
-    }
-
-    setConversationState(conversations: ConversationState) {
-        const serializedFull = JSON.stringify(conversations.fullHistory);
-        const serializedCompact = JSON.stringify(conversations.runningHistory);
-        try {
-            this.logger().info(`Saving conversation state ${conversations.id}, full_length: ${serializedFull.length}, compact_length: ${serializedCompact.length}`);
-            this.sql`INSERT OR REPLACE INTO compact_conversations (id, messages) VALUES (${conversations.id}, ${serializedCompact})`;
-            this.sql`INSERT OR REPLACE INTO full_conversations (id, messages) VALUES (${conversations.id}, ${serializedFull})`;
-        } catch (error) {
-            this.logger().error(`Failed to save conversation state ${conversations.id}`, error);
-        }
-    }
-
-    addConversationMessage(message: ConversationMessage) {
-        const conversationState = this.getConversationState();
-        if (!conversationState.runningHistory.find(msg => msg.conversationId === message.conversationId)) {
-            conversationState.runningHistory.push(message);
-        } else  {
-            conversationState.runningHistory = conversationState.runningHistory.map(msg => {
-                if (msg.conversationId === message.conversationId) {
-                    return message;
-                }
-                return msg;
-            });
-        }
-        if (!conversationState.fullHistory.find(msg => msg.conversationId === message.conversationId)) {
-            conversationState.fullHistory.push(message);
-        } else {
-            conversationState.fullHistory = conversationState.fullHistory.map(msg => {
-                if (msg.conversationId === message.conversationId) {
-                    return message;
-                }
-                return msg;
-            });
-        }
-        this.setConversationState(conversationState);
-    }
-
     private async saveToDatabase() {
         this.logger().info(`Blueprint generated successfully for agent ${this.getAgentId()}`);
         // Save the app to database (authenticated users only)
@@ -585,10 +366,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         this.logger().info(`Agent initialized successfully for agent ${this.state.inferenceContext.agentId}`);
     }
 
-    getPreviewUrlCache() {
-        return this.previewUrlCache;
-    }
-
     getProjectSetupAssistant(): ProjectSetupAssistant {
         if (this.projectSetupAssistant === undefined) {
             this.projectSetupAssistant = new ProjectSetupAssistant({
@@ -601,22 +378,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
             });
         }
         return this.projectSetupAssistant;
-    }
-
-    getSessionId() {
-        return this.deploymentManager.getSessionId();
-    }
-
-    getSandboxServiceClient(): BaseSandboxService {
-        return this.deploymentManager.getClient();
-    }
-
-    getGit(): GitVersionControl {
-        return this.git;
-    }
-
-    isCodeGenerating(): boolean {
-        return this.generationPromise !== null;
     }
 
     rechargePhasesCounter(max_phases: number = MAX_PHASES): void {
@@ -645,60 +406,15 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         return {
             env: this.env,
             agentId: this.getAgentId(),
-            context: GenerationContext.from(this.state, this.getTemplateDetails(), this.logger()),
+            context: this.buildProjectContext(),
             logger: this.logger(),
             inferenceContext: this.getInferenceContext(),
-            agent: this.codingAgent
+            agent: this
         };
     }
 
-    /**
-     * Gets or creates an abort controller for the current operation
-     * Reuses existing controller for nested operations (e.g., tool calling)
-     */
-    protected getOrCreateAbortController(): AbortController {
-        // Don't reuse aborted controllers
-        if (this.currentAbortController && !this.currentAbortController.signal.aborted) {
-            return this.currentAbortController;
-        }
-        
-        // Create new controller in memory for new operation
-        this.currentAbortController = new AbortController();
-        
-        return this.currentAbortController;
-    }
-    
-    /**
-     * Cancels the current inference operation if any
-     */
-    public cancelCurrentInference(): boolean {
-        if (this.currentAbortController) {
-            this.logger().info('Cancelling current inference operation');
-            this.currentAbortController.abort();
-            this.currentAbortController = undefined;
-            return true;
-        }
-        return false;
-    }
-    
-    /**
-     * Clears abort controller after successful completion
-     */
-    protected clearAbortController(): void {
-        this.currentAbortController = undefined;
-    }
-    
-    /**
-     * Gets inference context with abort signal
-     * Reuses existing abort controller for nested operations
-     */
-    protected getInferenceContext(): InferenceContext {
-        const controller = this.getOrCreateAbortController();
-        
-        return {
-            ...this.state.inferenceContext,
-            abortSignal: controller.signal,
-        };
+    protected buildProjectContext(): PhasicGenerationContext {
+        return PhasicGenerationContext.from(this.state, this.getTemplateDetails(), this.logger());
     }
 
     private createNewIncompletePhase(phaseConcept: PhaseConceptType) {
@@ -730,14 +446,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         this.logger().info("Completed phases:", JSON.stringify(phases, null, 2));
     }
 
-    private broadcastError(context: string, error: unknown): void {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        this.logger().error(`${context}:`, error);
-        this.broadcast(WebSocketMessageResponses.ERROR, {
-            error: `${context}: ${errorMessage}`
-        });
-    }
-
     async generateReadme() {
         this.logger().info('Generating README.md');
         // Only generate if it doesn't exist
@@ -765,29 +473,8 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
 
     async queueUserRequest(request: string, images?: ProcessedImageAttachment[]): Promise<void> {
         this.rechargePhasesCounter(3);
-        this.setState({
-            ...this.state,
-            pendingUserInputs: [...this.state.pendingUserInputs, request]
-        });
-        if (images && images.length > 0) {
-            this.logger().info('Storing user images in-memory for phase generation', {
-                imageCount: images.length,
-            });
-            this.pendingUserImages = [...this.pendingUserImages, ...images];
-        }
+        super.queueUserRequest(request, images);
     }
-
-    private fetchPendingUserRequests(): string[] {
-        const inputs = this.state.pendingUserInputs;
-        if (inputs.length > 0) {
-            this.setState({
-                ...this.state,
-                pendingUserInputs: []
-            });
-        }
-        return inputs;
-    }
-
     /**
      * State machine controller for code generation with user interaction support
      * Executes phases sequentially with review cycles and proper state transitions
@@ -1102,59 +789,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         return CurrentDevState.REVIEWING;
     }
 
-    async executeDeepDebug(
-        issue: string,
-        toolRenderer: RenderToolCall,
-        streamCb: (chunk: string) => void,
-        focusPaths?: string[],
-    ): Promise<DeepDebugResult> {
-        
-        const debugPromise = (async () => {
-            try {
-                const previousTranscript = this.state.lastDeepDebugTranscript ?? undefined;
-                const operationOptions = this.getOperationOptions();
-                const filesIndex = operationOptions.context.allFiles
-                    .filter((f) =>
-                        !focusPaths?.length ||
-                        focusPaths.some((p) => f.filePath.includes(p)),
-                    );
-
-                const runtimeErrors = await this.fetchRuntimeErrors(true);
-
-                const dbg = new DeepCodeDebugger(
-                    operationOptions.env,
-                    operationOptions.inferenceContext,
-                );
-
-                const out = await dbg.run(
-                    { issue, previousTranscript },
-                    { filesIndex, agent: this.codingAgent, runtimeErrors },
-                    streamCb,
-                    toolRenderer,
-                );
-
-                // Save transcript for next session
-                this.setState({
-                    ...this.state,
-                    lastDeepDebugTranscript: out,
-                });
-
-                return { success: true as const, transcript: out };
-            } catch (e) {
-                this.logger().error('Deep debugger failed', e);
-                return { success: false as const, error: `Deep debugger failed: ${String(e)}` };
-            } finally{
-                this.deepDebugPromise = null;
-                this.deepDebugConversationId = null;
-            }
-        })();
-
-        // Store promise before awaiting
-        this.deepDebugPromise = debugPromise;
-
-        return await debugPromise;
-    }
-
     /**
      * Generate next phase with user context (suggestions and images)
      */
@@ -1406,55 +1040,11 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
     getTotalFiles(): number {
         return this.fileManager.getGeneratedFilePaths().length + ((this.state.currentPhase || this.state.blueprint.initialPhase)?.files?.length || 0);
     }
-
-    getSummary(): Promise<AgentSummary> {
-        const summaryData = {
-            query: this.state.query,
-            generatedCode: this.fileManager.getGeneratedFiles(),
-            conversation: this.state.conversationMessages,
-        };
-        return Promise.resolve(summaryData);
-    }
-
-    async getFullState(): Promise<CodeGenState> {
-        return this.state;
-    }
     
     private migrateStateIfNeeded(): void {
         const migratedState = StateMigration.migrateIfNeeded(this.state, this.logger());
         if (migratedState) {
             this.setState(migratedState);
-        }
-    }
-
-    getFileGenerated(filePath: string) {
-        return this.fileManager!.getGeneratedFile(filePath) || null;
-    }
-
-    getWebSockets(): WebSocket[] {
-        return this.ctx.getWebSockets();
-    }
-
-    async fetchRuntimeErrors(clear: boolean = true) {
-        await this.deploymentManager.waitForPreview();
-
-        try {
-            const errors = await this.deploymentManager.fetchRuntimeErrors(clear);
-            
-            if (errors.length > 0) {
-                this.broadcast(WebSocketMessageResponses.RUNTIME_ERROR_FOUND, {
-                    errors,
-                    message: "Runtime errors found",
-                    count: errors.length
-                });
-            }
-
-            return errors;
-        } catch (error) {
-            this.logger().error("Exception fetching runtime errors:", error);
-            // If fetch fails, initiate redeploy
-            this.deployToSandbox();
-            return [];
         }
     }
 
@@ -1594,42 +1184,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         return { runtimeErrors, staticAnalysis };
     }
 
-    async updateProjectName(newName: string): Promise<boolean> {
-        try {
-            const valid = /^[a-z0-9-_]{3,50}$/.test(newName);
-            if (!valid) return false;
-            const updatedBlueprint = { ...this.state.blueprint, projectName: newName } as Blueprint;
-            this.setState({
-                ...this.state,
-                blueprint: updatedBlueprint
-            });
-            let ok = true;
-            if (this.state.sandboxInstanceId) {
-                try {
-                    ok = await this.getSandboxServiceClient().updateProjectName(this.state.sandboxInstanceId, newName);
-                } catch (_) {
-                    ok = false;
-                }
-            }
-            try {
-                const appService = new AppService(this.env);
-                const dbOk = await appService.updateApp(this.getAgentId(), { title: newName });
-                ok = ok && dbOk;
-            } catch (error) {
-                this.logger().error('Error updating project name in database:', error);
-                ok = false;
-            }
-            this.broadcast(WebSocketMessageResponses.PROJECT_NAME_UPDATED, {
-                message: 'Project name updated',
-                projectName: newName
-            });
-            return ok;
-        } catch (error) {
-            this.logger().error('Error updating project name:', error);
-            return false;
-        }
-    }
-
     async updateBlueprint(patch: Partial<Blueprint>): Promise<Blueprint> {
         const keys = Object.keys(patch) as (keyof Blueprint)[];
         const allowed = new Set<keyof Blueprint>([
@@ -1667,33 +1221,7 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         });
         return updated;
     }
-
-    // ===== Debugging helpers for assistants =====
-    async readFiles(paths: string[]): Promise<{ files: { path: string; content: string }[] }> {
-        const { sandboxInstanceId } = this.state;
-        if (!sandboxInstanceId) {
-            return { files: [] };
-        }
-        const resp = await this.getSandboxServiceClient().getFiles(sandboxInstanceId, paths);
-        if (!resp.success) {
-            this.logger().warn('readFiles failed', { error: resp.error });
-            return { files: [] };
-        }
-        return { files: resp.files.map(f => ({ path: f.filePath, content: f.fileContents })) };
-    }
-
-    async execCommands(commands: string[], shouldSave: boolean, timeout?: number): Promise<ExecuteCommandsResponse> {
-        const { sandboxInstanceId } = this.state;
-        if (!sandboxInstanceId) {
-            return { success: false, results: [], error: 'No sandbox instance' } as any;
-        }
-        const result = await this.getSandboxServiceClient().executeCommands(sandboxInstanceId, commands, timeout);
-        if (shouldSave) {
-            this.saveExecutedCommands(commands);
-        }
-        return result;
-    }
-
+    
     /**
      * Regenerate a file to fix identified issues
      * Retries up to 3 times before giving up
@@ -1797,185 +1325,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
         };
     }
 
-    async deployToSandbox(files: FileOutputType[] = [], redeploy: boolean = false, commitMessage?: string, clearLogs: boolean = false): Promise<PreviewType | null> {
-        // Call deployment manager with callbacks for broadcasting at the right times
-        const result = await this.deploymentManager.deployToSandbox(
-            files,
-            redeploy,
-            commitMessage,
-            clearLogs,
-            {
-                onStarted: (data) => {
-                    this.broadcast(WebSocketMessageResponses.DEPLOYMENT_STARTED, data);
-                },
-                onCompleted: (data) => {
-                    this.broadcast(WebSocketMessageResponses.DEPLOYMENT_COMPLETED, data);
-                },
-                onError: (data) => {
-                    this.broadcast(WebSocketMessageResponses.DEPLOYMENT_FAILED, data);
-                },
-                onAfterSetupCommands: async () => {
-                    // Sync package.json after setup commands (includes dependency installs)
-                    await this.syncPackageJsonFromSandbox();
-                }
-            }
-        );
-
-        return result;
-    }
-    
-    /**
-     * Deploy the generated code to Cloudflare Workers
-     */
-    async deployToCloudflare(): Promise<{ deploymentUrl?: string; workersUrl?: string } | null> {
-        try {
-            // Ensure sandbox instance exists first
-            if (!this.state.sandboxInstanceId) {
-                this.logger().info('No sandbox instance, deploying to sandbox first');
-                await this.deployToSandbox();
-                
-                if (!this.state.sandboxInstanceId) {
-                    this.logger().error('Failed to deploy to sandbox service');
-                    this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_ERROR, {
-                        message: 'Deployment failed: Failed to deploy to sandbox service',
-                        error: 'Sandbox service unavailable'
-                    });
-                    return null;
-                }
-            }
-
-            // Call service - handles orchestration, callbacks for broadcasting
-            const result = await this.deploymentManager.deployToCloudflare({
-                onStarted: (data) => {
-                    this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_STARTED, data);
-                },
-                onCompleted: (data) => {
-                    this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_COMPLETED, data);
-                },
-                onError: (data) => {
-                    this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_ERROR, data);
-                },
-                onPreviewExpired: () => {
-                    // Re-deploy sandbox and broadcast error
-                    this.deployToSandbox();
-                    this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_ERROR, {
-                        message: PREVIEW_EXPIRED_ERROR,
-                        error: PREVIEW_EXPIRED_ERROR
-                    });
-                }
-            });
-
-            // Update database with deployment ID if successful
-            if (result.deploymentUrl && result.deploymentId) {
-                const appService = new AppService(this.env);
-                await appService.updateDeploymentId(
-                    this.getAgentId(),
-                    result.deploymentId
-                );
-            }
-
-            return result.deploymentUrl ? { deploymentUrl: result.deploymentUrl } : null;
-
-        } catch (error) {
-            this.logger().error('Cloudflare deployment error:', error);
-            this.broadcast(WebSocketMessageResponses.CLOUDFLARE_DEPLOYMENT_ERROR, {
-                message: 'Deployment failed',
-                error: error instanceof Error ? error.message : String(error)
-            });
-            return null;
-        }
-    }
-
-    async waitForGeneration(): Promise<void> {
-        if (this.generationPromise) {
-            try {
-                await this.generationPromise;
-                this.logger().info("Code generation completed successfully");
-            } catch (error) {
-                this.logger().error("Error during code generation:", error);
-            }
-        } else {
-            this.logger().error("No generation process found");
-        }
-    }
-
-    isDeepDebugging(): boolean {
-        return this.deepDebugPromise !== null;
-    }
-    
-    getDeepDebugSessionState(): { conversationId: string } | null {
-        if (this.deepDebugConversationId && this.deepDebugPromise) {
-            return { conversationId: this.deepDebugConversationId };
-        }
-        return null;
-    }
-
-    async waitForDeepDebug(): Promise<void> {
-        if (this.deepDebugPromise) {
-            try {
-                await this.deepDebugPromise;
-                this.logger().info("Deep debug session completed successfully");
-            } catch (error) {
-                this.logger().error("Error during deep debug session:", error);
-            } finally {
-                // Clear promise after waiting completes
-                this.deepDebugPromise = null;
-            }
-        }
-    }
-
-    /**
-     * Cache GitHub OAuth token in memory for subsequent exports
-     * Token is ephemeral - lost on DO eviction
-     */
-    setGitHubToken(token: string, username: string, ttl: number = 3600000): void {
-        this.githubTokenCache = {
-            token,
-            username,
-            expiresAt: Date.now() + ttl
-        };
-        this.logger().info('GitHub token cached', { 
-            username, 
-            expiresAt: new Date(this.githubTokenCache.expiresAt).toISOString() 
-        });
-    }
-
-    /**
-     * Get cached GitHub token if available and not expired
-     */
-    getGitHubToken(): { token: string; username: string } | null {
-        if (!this.githubTokenCache) {
-            return null;
-        }
-        
-        if (Date.now() >= this.githubTokenCache.expiresAt) {
-            this.logger().info('GitHub token expired, clearing cache');
-            this.githubTokenCache = null;
-            return null;
-        }
-        
-        return {
-            token: this.githubTokenCache.token,
-            username: this.githubTokenCache.username
-        };
-    }
-
-    /**
-     * Clear cached GitHub token
-     */
-    clearGitHubToken(): void {
-        this.githubTokenCache = null;
-        this.logger().info('GitHub token cleared');
-    }
-
-    async onMessage(connection: Connection, message: string): Promise<void> {
-        handleWebSocketMessage(this, connection, message);
-    }
-
-    async onClose(connection: Connection): Promise<void> {
-        handleWebSocketClose(connection);
-    }
-
     private async onProjectUpdate(message: string): Promise<void> {
         this.setState({
             ...this.state,
@@ -2000,56 +1349,12 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
             }
             this.onProjectUpdate(message);
         }
-        broadcastToConnections(this, msg, data || {} as WebSocketMessageData<T>);
+        super.broadcast(msg, data);
     }
 
-    private getBootstrapCommands() {
-        const bootstrapCommands = this.state.commandsHistory || [];
-        // Validate, deduplicate, and clean
-        const { validCommands } = validateAndCleanBootstrapCommands(bootstrapCommands);
-        return validCommands;
-    }
-
-    private async saveExecutedCommands(commands: string[]) {
-        this.logger().info('Saving executed commands', { commands });
-        
-        // Merge with existing history
-        const mergedCommands = [...(this.state.commandsHistory || []), ...commands];
-        
-        // Validate, deduplicate, and clean
-        const { validCommands, invalidCommands, deduplicated } = validateAndCleanBootstrapCommands(mergedCommands);
-
-        // Log what was filtered out
-        if (invalidCommands.length > 0 || deduplicated > 0) {
-            this.logger().warn('[commands] Bootstrap commands cleaned', { 
-                invalidCommands,
-                invalidCount: invalidCommands.length,
-                deduplicatedCount: deduplicated,
-                finalCount: validCommands.length
-            });
-        }
-
-        // Update state with cleaned commands
-        this.setState({
-            ...this.state,
-            commandsHistory: validCommands
-        });
-
+    async onExecutedCommandsHook(commands: string[]) {
         // Update bootstrap script with validated commands
-        await this.updateBootstrapScript(validCommands);
-
-        // Sync package.json if any dependency-modifying commands were executed
-        const hasDependencyCommands = commands.some(cmd => 
-            cmd.includes('install') || 
-            cmd.includes(' add ') || 
-            cmd.includes('remove') ||
-            cmd.includes('uninstall')
-        );
-        
-        if (hasDependencyCommands) {
-            this.logger().info('Dependency commands executed, syncing package.json from sandbox');
-            await this.syncPackageJsonFromSandbox();
-        }
+        await this.updateBootstrapScript(commands);
     }
 
     /**
@@ -2187,232 +1492,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
     }
 
     /**
-     * Sync package.json from sandbox to agent's git repository
-     * Called after install/add/remove commands to keep dependencies in sync
-     */
-    private async syncPackageJsonFromSandbox(): Promise<void> {
-        try {
-            this.logger().info('Fetching current package.json from sandbox');
-            const results = await this.readFiles(['package.json']);
-            if (!results || !results.files || results.files.length === 0) {
-                this.logger().warn('Failed to fetch package.json from sandbox', { results });
-                return;
-            }
-            const packageJsonContent = results.files[0].content;
-
-            const { updated, packageJson } = updatePackageJson(this.state.lastPackageJson, packageJsonContent);
-            if (!updated) {
-                this.logger().info('package.json has not changed, skipping sync');
-                return;
-            }
-            // Update state with latest package.json
-            this.setState({
-                ...this.state,
-                lastPackageJson: packageJson
-            });
-            
-            // Commit to git repository
-            const fileState = await this.fileManager.saveGeneratedFile(
-                {
-                    filePath: 'package.json',
-                    fileContents: packageJson,
-                    filePurpose: 'Project dependencies and configuration'
-                },
-                'chore: sync package.json dependencies from sandbox'
-            );
-            
-            this.logger().info('Successfully synced package.json to git', { 
-                filePath: fileState.filePath,
-            });
-            
-            // Broadcast update to clients
-            this.broadcast(WebSocketMessageResponses.FILE_GENERATED, {
-                message: 'Synced package.json from sandbox',
-                file: fileState
-            });
-            
-        } catch (error) {
-            this.logger().error('Failed to sync package.json from sandbox', error);
-            // Non-critical error - don't throw, just log
-        }
-    }
-
-    async getLogs(_reset?: boolean, durationSeconds?: number): Promise<string> {
-        if (!this.state.sandboxInstanceId) {
-            throw new Error('Cannot get logs: No sandbox instance available');
-        }
-        
-        const response = await this.getSandboxServiceClient().getLogs(this.state.sandboxInstanceId, _reset, durationSeconds);
-        if (response.success) {
-            return `STDOUT: ${response.logs.stdout}\nSTDERR: ${response.logs.stderr}`;
-        } else {
-            return `Failed to get logs, ${response.error}`;
-        }
-    }
-
-    /**
-     * Delete files from the file manager
-     */
-    async deleteFiles(filePaths: string[]) {
-        const deleteCommands: string[] = [];
-        for (const filePath of filePaths) {
-            deleteCommands.push(`rm -rf ${filePath}`);
-        }
-        // Remove the files from file manager
-        this.fileManager.deleteFiles(filePaths);
-        try {
-            await this.executeCommands(deleteCommands, false);
-            this.logger().info(`Deleted ${filePaths.length} files: ${filePaths.join(", ")}`);
-        } catch (error) {
-            this.logger().error('Error deleting files:', error);
-        }
-    }
-
-    /**
-     * Export generated code to a GitHub repository
-     */
-    async pushToGitHub(options: GitHubPushRequest): Promise<GitHubExportResult> {
-        try {
-            this.logger().info('Starting GitHub export using DO git');
-
-            // Broadcast export started
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_STARTED, {
-                message: `Starting GitHub export to repository "${options.cloneUrl}"`,
-                repositoryName: options.repositoryHtmlUrl,
-                isPrivate: options.isPrivate
-            });
-
-            // Export git objects from DO
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
-                message: 'Preparing git repository...',
-                step: 'preparing',
-                progress: 20
-            });
-
-            const { gitObjects, query, templateDetails } = await this.exportGitObjects();
-            
-            this.logger().info('Git objects exported', {
-                objectCount: gitObjects.length,
-                hasTemplate: !!templateDetails
-            });
-
-            // Get app createdAt timestamp for template base commit
-            let appCreatedAt: Date | undefined = undefined;
-            try {
-                const appId = this.getAgentId();
-                if (appId) {
-                    const appService = new AppService(this.env);
-                    const app = await appService.getAppDetails(appId);
-                    if (app && app.createdAt) {
-                        appCreatedAt = new Date(app.createdAt);
-                        this.logger().info('Using app createdAt for template base', {
-                            createdAt: appCreatedAt.toISOString()
-                        });
-                    }
-                }
-            } catch (error) {
-                this.logger().warn('Failed to get app createdAt, using current time', { error });
-                appCreatedAt = new Date(); // Fallback to current time
-            }
-
-            // Push to GitHub using new service
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
-                message: 'Uploading to GitHub repository...',
-                step: 'uploading_files',
-                progress: 40
-            });
-
-            const result = await GitHubService.exportToGitHub({
-                gitObjects,
-                templateDetails,
-                appQuery: query,
-                appCreatedAt,
-                token: options.token,
-                repositoryUrl: options.repositoryHtmlUrl,
-                username: options.username,
-                email: options.email
-            });
-
-            if (!result.success) {
-                throw new Error(result.error || 'Failed to export to GitHub');
-            }
-
-            this.logger().info('GitHub export completed', { 
-                commitSha: result.commitSha
-            });
-
-            // Cache token for subsequent exports
-            if (options.token && options.username) {
-                try {
-                    this.setGitHubToken(options.token, options.username);
-                    this.logger().info('GitHub token cached after successful export');
-                } catch (cacheError) {
-                    // Non-fatal - continue with finalization
-                    this.logger().warn('Failed to cache GitHub token', { error: cacheError });
-                }
-            }
-
-            // Update database
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_PROGRESS, {
-                message: 'Finalizing GitHub export...',
-                step: 'finalizing',
-                progress: 90
-            });
-
-            const agentId = this.getAgentId();
-            this.logger().info('[DB Update] Updating app with GitHub repository URL', {
-                agentId,
-                repositoryUrl: options.repositoryHtmlUrl,
-                visibility: options.isPrivate ? 'private' : 'public'
-            });
-
-            const appService = new AppService(this.env);
-            const updateResult = await appService.updateGitHubRepository(
-                agentId || '',
-                options.repositoryHtmlUrl || '',
-                options.isPrivate ? 'private' : 'public'
-            );
-
-            this.logger().info('[DB Update] Database update result', {
-                agentId,
-                success: updateResult,
-                repositoryUrl: options.repositoryHtmlUrl
-            });
-
-            // Broadcast success
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_COMPLETED, {
-                message: `Successfully exported to GitHub repository: ${options.repositoryHtmlUrl}`,
-                repositoryUrl: options.repositoryHtmlUrl,
-                cloneUrl: options.cloneUrl,
-                commitSha: result.commitSha
-            });
-
-            this.logger().info('GitHub export completed successfully', { 
-                repositoryUrl: options.repositoryHtmlUrl,
-                commitSha: result.commitSha
-            });
-            
-            return { 
-                success: true, 
-                repositoryUrl: options.repositoryHtmlUrl,
-                cloneUrl: options.cloneUrl
-            };
-
-        } catch (error) {
-            this.logger().error('GitHub export failed', error);
-            this.broadcast(WebSocketMessageResponses.GITHUB_EXPORT_ERROR, {
-                message: `GitHub export failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            });
-            return { 
-                success: false, 
-                repositoryUrl: options.repositoryHtmlUrl,
-                cloneUrl: options.cloneUrl 
-            };
-        }
-    }
-
-    /**
      * Handle user input during conversational code generation
      * Processes user messages and updates pendingUserInputs state
      */
@@ -2429,7 +1508,7 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
             await this.ensureTemplateDetails();
 
             // Just fetch runtime errors
-            const errors = await this.fetchRuntimeErrors(false);
+            const errors = await this.fetchRuntimeErrors(false, false);
             const projectUpdates = await this.getAndResetProjectUpdates();
             this.logger().info('Passing context to user conversation processor', { errors, projectUpdates });
 
@@ -2498,25 +1577,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
             }
             this.broadcastError('Error processing user input', error);
         }
-    }
-
-    /**
-     * Clear conversation history
-     */
-    public clearConversation(): void {
-        const messageCount = this.state.conversationMessages.length;
-                        
-        // Clear conversation messages only from agent's running history
-        this.setState({
-            ...this.state,
-            conversationMessages: []
-        });
-                        
-        // Send confirmation response
-        this.broadcast(WebSocketMessageResponses.CONVERSATION_CLEARED, {
-            message: 'Conversation history cleared',
-            clearedMessageCount: messageCount
-        });
     }
 
     /**
@@ -2668,37 +1728,6 @@ export class SimpleCodeGeneratorAgent extends Agent<Env, CodeGenState> {
             }
             
             throw new Error(`Screenshot capture failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
-    }
-
-    /**
-     * Export git objects
-     * The route handler will build the repo with template rebasing
-     */
-    async exportGitObjects(): Promise<{
-        gitObjects: Array<{ path: string; data: Uint8Array }>;
-        query: string;
-        hasCommits: boolean;
-        templateDetails: TemplateDetails | null;
-    }> {
-        try {
-            // Export git objects efficiently (minimal DO memory usage)
-            const gitObjects = this.git.fs.exportGitObjects();
-
-            await this.gitInit();
-            
-            // Ensure template details are available
-            await this.ensureTemplateDetails();
-            
-            return {
-                gitObjects,
-                query: this.state.query || 'N/A',
-                hasCommits: gitObjects.length > 0,
-                templateDetails: this.templateDetailsCache
-            };
-        } catch (error) {
-            this.logger().error('exportGitObjects failed', error);
-            throw error;
         }
     }
 }

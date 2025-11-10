@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect, useMemo } from 'react';
-import { ArrowRight, Info } from 'react-feather';
+import { ArrowRight, Info, AlertCircle, Globe, Zap } from 'react-feather';
 import { useNavigate } from 'react-router';
 import { useAuth } from '@/contexts/auth-context';
 import {
@@ -15,7 +15,8 @@ import { useImageUpload } from '@/hooks/use-image-upload';
 import { useDragDrop } from '@/hooks/use-drag-drop';
 import { ImageUploadButton } from '@/components/image-upload-button';
 import { ImageAttachmentPreview } from '@/components/image-attachment-preview';
-import { SUPPORTED_IMAGE_MIME_TYPES } from '@/api-types';
+import { SUPPORTED_IMAGE_MIME_TYPES, type ProjectType, type DeploymentTarget } from '@/api-types';
+import { useCloudflareAuth } from '@/hooks/use-cloudflare-auth';
 
 export default function Home() {
 	const navigate = useNavigate();
@@ -24,6 +25,11 @@ export default function Home() {
 	const [agentMode, setAgentMode] = useState<AgentMode>('deterministic');
 	const [query, setQuery] = useState('');
 	const { user } = useAuth();
+
+	// Project type and deployment target
+	const [projectType, setProjectType] = useState<ProjectType>('app');
+	const [deploymentTarget, setDeploymentTarget] = useState<DeploymentTarget>('platform');
+	const { data: cfAuth } = useCloudflareAuth();
 
 	const { images, addImages, removeImage, clearImages, isProcessing } = useImageUpload({
 		onError: (error) => {
@@ -38,14 +44,25 @@ export default function Home() {
 	});
 
 
-	const placeholderPhrases = useMemo(() => [
-		"todo list app",
-		"F1 fantasy game",
-		"personal finance tracker"
-	], []);
+	const placeholderPhrases = useMemo(() => 
+		projectType === 'app' 
+			? ["todo list app", "F1 fantasy game", "personal finance tracker"]
+			: ["email reminder workflow", "image processing workflow", "data sync workflow"]
+	, [projectType]);
 	const [currentPlaceholderPhraseIndex, setCurrentPlaceholderPhraseIndex] = useState(0);
 	const [currentPlaceholderText, setCurrentPlaceholderText] = useState("");
 	const [isPlaceholderTyping, setIsPlaceholderTyping] = useState(true);
+
+	// Auto-set deployment target when project type changes
+	useEffect(() => {
+		if (projectType === 'workflow') {
+			setDeploymentTarget('self-hosted'); // Workflows must be self-hosted
+		}
+		// Reset placeholder animation when project type changes
+		setCurrentPlaceholderPhraseIndex(0);
+		setCurrentPlaceholderText("");
+		setIsPlaceholderTyping(true);
+	}, [projectType]);
 
 	const {
 		apps,
@@ -63,10 +80,12 @@ export default function Home() {
 	const handleCreateApp = (query: string, mode: AgentMode) => {
 		const encodedQuery = encodeURIComponent(query);
 		const encodedMode = encodeURIComponent(mode);
+		const encodedProjectType = encodeURIComponent(projectType);
+		const encodedDeploymentTarget = encodeURIComponent(deploymentTarget);
 		
 		// Encode images as JSON if present
 		const imageParam = images.length > 0 ? `&images=${encodeURIComponent(JSON.stringify(images))}` : '';
-		const intendedUrl = `/chat/new?query=${encodedQuery}&agentMode=${encodedMode}${imageParam}`;
+		const intendedUrl = `/chat/new?query=${encodedQuery}&agentMode=${encodedMode}&projectType=${encodedProjectType}&deploymentTarget=${encodedDeploymentTarget}${imageParam}`;
 
 		if (
 			!requireAuth({
@@ -183,6 +202,58 @@ export default function Home() {
 							}}
 							className="flex z-10 flex-col w-full min-h-[150px] bg-bg-4 border border-accent/30 dark:border-accent/50 dark:bg-bg-2 rounded-[18px] shadow-textarea p-5 transition-all duration-200"
 						>
+							{/* Project Type Selector */}
+							<div className="mb-4 pb-4 border-b border-accent/10">
+								<label className="block text-sm font-medium text-text-secondary mb-2">
+									What do you want to build?
+								</label>
+								<div className="flex gap-2">
+									<button
+										type="button"
+										onClick={() => setProjectType('app')}
+										className={clsx(
+											"flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border transition-all duration-200",
+											projectType === 'app'
+												? "bg-accent/10 border-accent text-accent font-medium"
+												: "bg-bg-4 dark:bg-bg-2 border-accent/20 text-text-secondary hover:border-accent/40"
+										)}
+									>
+										<Globe className="w-4 h-4" />
+										<span>Web App</span>
+									</button>
+									<button
+										type="button"
+										onClick={() => setProjectType('workflow')}
+										className={clsx(
+											"flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border transition-all duration-200",
+											projectType === 'workflow'
+												? "bg-accent/10 border-accent text-accent font-medium"
+												: "bg-bg-4 dark:bg-bg-2 border-accent/20 text-text-secondary hover:border-accent/40"
+										)}
+									>
+										<Zap className="w-4 h-4" />
+										<span>Cloudflare Workflow</span>
+									</button>
+								</div>
+								
+								{/* Cloudflare Auth Warning */}
+								{projectType === 'workflow' && !cfAuth?.authenticated && (
+									<div className="mt-3 flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+										<AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+										<div className="text-xs text-text-secondary">
+											<span className="font-medium text-text-primary">Cloudflare account required.</span>
+											{' '}Workflows deploy to your Cloudflare account. You'll need to connect your account before deploying.
+										</div>
+									</div>
+								)}
+								
+								{projectType === 'workflow' && (
+									<p className="text-xs text-text-tertiary mt-2">
+										Workflows are durable, multi-step processes that run on Cloudflare's edge
+									</p>
+								)}
+							</div>
+
 							<div 
 								className={clsx(
 									"flex-1 flex flex-col relative",

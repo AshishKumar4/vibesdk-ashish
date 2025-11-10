@@ -6,7 +6,8 @@ import { toolFeedbackDefinition } from './toolkit/feedback';
 import { createQueueRequestTool } from './toolkit/queue-request';
 import { createGetLogsTool } from './toolkit/get-logs';
 import { createDeployPreviewTool } from './toolkit/deploy-preview';
-import { CodingAgentInterface } from 'worker/agents/services/implementations/CodingAgent';
+import type { ICodingAgent } from 'worker/agents/services/interfaces/ICodingAgent';
+import type { IAppBuilderAgent } from 'worker/agents/services/interfaces/IAppBuilderAgent';
 import { createDeepDebuggerTool } from "./toolkit/deep-debugger";
 import { createRenameProjectTool } from './toolkit/rename-project';
 import { createAlterBlueprintTool } from './toolkit/alter-blueprint';
@@ -21,6 +22,8 @@ import { createGetRuntimeErrorsTool } from './toolkit/get-runtime-errors';
 import { createWaitForGenerationTool } from './toolkit/wait-for-generation';
 import { createWaitForDebugTool } from './toolkit/wait-for-debug';
 import { createGitTool } from './toolkit/git';
+import { createConfigureWorkflowMetadataTool } from './toolkit/configure-workflow-metadata';
+import type { AgenticCodingAgent } from '../core/agenticCodingAgent';
 
 export async function executeToolWithDefinition<TArgs, TResult>(
     toolDef: ToolDefinition<TArgs, TResult>,
@@ -37,12 +40,12 @@ export async function executeToolWithDefinition<TArgs, TResult>(
  * Add new tools here - they're automatically included in the conversation
  */
 export function buildTools(
-    agent: CodingAgentInterface,
+    agent: ICodingAgent,
     logger: StructuredLogger,
     toolRenderer: RenderToolCall,
     streamCb: (chunk: string) => void,
 ): ToolDefinition<any, any>[] {
-    return [
+    const baseTools: ToolDefinition<any, any>[] = [
         toolWebSearchDefinition,
         toolFeedbackDefinition,
         createQueueRequestTool(agent, logger),
@@ -51,27 +54,48 @@ export function buildTools(
         createWaitForGenerationTool(agent, logger),
         createWaitForDebugTool(agent, logger),
         createRenameProjectTool(agent, logger),
-        createAlterBlueprintTool(agent, logger),
         // Git tool (safe version - no reset for user conversations)
         createGitTool(agent, logger, { excludeCommands: ['reset'] }),
         // Deep autonomous debugging assistant tool
         createDeepDebuggerTool(agent, logger, toolRenderer, streamCb),
     ];
+    
+    // Add app-specific tools only for app agents
+    if (agent.getProjectType() === 'app') {
+        baseTools.push(
+            createAlterBlueprintTool(agent as IAppBuilderAgent, logger),
+        );
+    }
+    
+    return baseTools;
 }
 
 export function buildDebugTools(session: DebugSession, logger: StructuredLogger, toolRenderer?: RenderToolCall): ToolDefinition<any, any>[] {
-  const tools = [
+  const tools: ToolDefinition<any, any>[] = [
     createGetLogsTool(session.agent, logger),
     createGetRuntimeErrorsTool(session.agent, logger),
     createReadFilesTool(session.agent, logger),
     createRunAnalysisTool(session.agent, logger),
     createExecCommandsTool(session.agent, logger),
-    createRegenerateFileTool(session.agent, logger),
     createGenerateFilesTool(session.agent, logger),
     createDeployPreviewTool(session.agent, logger),
     createWaitTool(logger),
     createGitTool(session.agent, logger),
   ];
+  
+  // Add app-specific debug tools only for app agents
+  if (session.agent.getProjectType() === 'app') {
+    tools.push(
+      createRegenerateFileTool(session.agent as IAppBuilderAgent, logger),
+    );
+  }
+  
+  // Add workflow-specific tools only for workflow agents
+  if (session.agent.getProjectType() === 'workflow') {
+    tools.push(
+      createConfigureWorkflowMetadataTool(session.agent as AgenticCodingAgent, logger),
+    );
+  }
 
   // Attach tool renderer for UI visualization if provided
   if (toolRenderer) {

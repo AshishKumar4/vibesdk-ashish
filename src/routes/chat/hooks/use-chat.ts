@@ -6,8 +6,11 @@ import {
 	type BlueprintType,
 	type WebSocketMessage,
 	type CodeFixEdits,
-	type ImageAttachment
+	type ImageAttachment,
+	type ProjectType,
+	type DeploymentTarget,
 } from '@/api-types';
+import { type IProjectAdapter } from '../adapters';
 import {
 	createRepairingJSONParser,
 	ndjsonStream,
@@ -53,6 +56,8 @@ export function useChat({
 	query: userQuery,
 	images: userImages,
 	agentMode = 'deterministic',
+	projectType: userProjectType,
+	deploymentTarget: userDeploymentTarget,
 	onDebugMessage,
 	onTerminalMessage,
 }: {
@@ -60,6 +65,8 @@ export function useChat({
 	query: string | null;
 	images?: ImageAttachment[];
 	agentMode?: 'deterministic' | 'smart';
+	projectType?: ProjectType;
+	deploymentTarget?: DeploymentTarget;
 	onDebugMessage?: (type: 'error' | 'warning' | 'info' | 'websocket', message: string, details?: string, source?: string, messageType?: string, rawMessage?: unknown) => void;
 	onTerminalMessage?: (log: { id: string; content: string; type: 'command' | 'stdout' | 'stderr' | 'info' | 'error' | 'warn' | 'debug'; timestamp: number; source?: string }) => void;
 }) {
@@ -75,6 +82,10 @@ export function useChat({
 	const [messages, setMessages] = useState<ChatMessage[]>([
 		createAIMessage('main', 'Thinking...', true),
 	]);
+
+	// Project type and adapter state
+	const [projectType, setProjectType] = useState<ProjectType | undefined>();
+	const [projectAdapter, setProjectAdapter] = useState<IProjectAdapter | undefined>();
 
 	const [bootstrapFiles, setBootstrapFiles] = useState<FileType[]>([]);
 	const [blueprint, setBlueprint] = useState<BlueprintType>();
@@ -190,8 +201,12 @@ export function useChat({
 			setRuntimeErrorCount,
 			setStaticIssueCount,
 			setIsDebugging,
+			setProjectType,
+			setProjectAdapter,
 			// Current state
 			isInitialStateRestored,
+			projectType,
+			projectAdapter,
 			blueprint,
 			query,
 			bootstrapFiles,
@@ -210,6 +225,8 @@ export function useChat({
 		} as HandleMessageDeps),
 		[
 			isInitialStateRestored,
+			projectType,
+			projectAdapter,
 			blueprint,
 			query,
 			bootstrapFiles,
@@ -294,6 +311,7 @@ export function useChat({
 					// Request file generation for new chats only
 					if (!disableGenerate && urlChatId === 'new') {
 						logger.debug('🔄 Starting code generation for new chat');
+						setIsGenerating(true);
 						sendWebSocketMessage(ws, 'generate_all');
 					}
 				});
@@ -405,6 +423,8 @@ export function useChat({
 					const response = await apiClient.createAgentSession({
 						query: userQuery,
 						agentMode,
+						projectType: userProjectType,
+						deploymentTarget: userDeploymentTarget,
 						images: userImages, // Pass images from URL params for multi-modal blueprint
 					});
 
@@ -637,6 +657,9 @@ export function useChat({
 		phaseTimeline,
 		isThinking,
 		onCompleteBootstrap,
+		// Project adapter integration
+		projectType,
+		projectAdapter,
 		// Deployment and generation control
 		isDeploying,
 		cloudflareDeploymentUrl,

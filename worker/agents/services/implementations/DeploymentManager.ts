@@ -262,12 +262,11 @@ export class DeploymentManager extends BaseAgentService implements IDeploymentMa
      */
     async fetchRuntimeErrors(clear: boolean = true): Promise<RuntimeError[]> {
         const { sandboxInstanceId } = this.getState();
-        const logger = this.getLog();
-        const client = this.getClient();
-
         if (!sandboxInstanceId) {
             throw new Error('No sandbox instance available for runtime error fetching');
         }
+        const logger = this.getLog();
+        const client = this.getClient();
 
         const resp = await client.getInstanceErrors(sandboxInstanceId, clear);
             
@@ -660,8 +659,10 @@ export class DeploymentManager extends BaseAgentService implements IDeploymentMa
         });
 
         // Deploy to Cloudflare
+        // Pass user credentials if provided (for workflows), otherwise use platform credentials (for apps)
         const deploymentResult = await client.deployToCloudflareWorkers(
-            state.sandboxInstanceId
+            state.sandboxInstanceId,
+            callbacks?.userCredentials
         );
 
         logger.info('Deployment result:', deploymentResult);

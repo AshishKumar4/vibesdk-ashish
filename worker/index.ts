@@ -1,5 +1,5 @@
 import { createLogger } from './logger';
-import { SmartCodeGeneratorAgent } from './agents/core/smartGeneratorAgent';
+import { ProjectAgent } from './agents/core/projectAgent';
 import { isDispatcherAvailable } from './utils/dispatcherUtils';
 import { createApp } from './app';
 // import * as Sentry from '@sentry/cloudflare';
@@ -13,10 +13,12 @@ import { handleGitProtocolRequest, isGitProtocolRequest } from './api/handlers/g
 
 // Durable Object and Service exports
 export { UserAppSandboxService, DeployerService } from './services/sandbox/sandboxSdkClient';
+export { UserSecretsStore } from './services/secrets/UserSecretsStore';
 
-// export const CodeGeneratorAgent = Sentry.instrumentDurableObjectWithSentry(sentryOptions, SmartCodeGeneratorAgent);
+// Export ProjectAgent as CodeGeneratorAgent for backward compatibility with production DO bindings
+// export const CodeGeneratorAgent = Sentry.instrumentDurableObjectWithSentry(sentryOptions, ProjectAgent);
 // export const DORateLimitStore = Sentry.instrumentDurableObjectWithSentry(sentryOptions, BaseDORateLimitStore);
-export const CodeGeneratorAgent = SmartCodeGeneratorAgent;
+export const CodeGeneratorAgent = ProjectAgent;
 export const DORateLimitStore = BaseDORateLimitStore;
 
 // Logger for the main application and handlers

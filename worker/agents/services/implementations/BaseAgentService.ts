@@ -2,13 +2,15 @@ import { IStateManager } from '../interfaces/IStateManager';
 import { IFileManager } from '../interfaces/IFileManager';
 import { StructuredLogger } from '../../../logger';
 import { ServiceOptions } from '../interfaces/IServiceOptions';
+import { BaseProjectState } from '../../core/state';
 
 /**
  * Base class for all agent services
  * Provides common dependencies and DO-compatible access patterns
+ * Works with any state extending BaseProjectState
  */
 export abstract class BaseAgentService {
-    protected readonly stateManager: IStateManager;
+    protected readonly stateManager: IStateManager<BaseProjectState>;
     protected readonly fileManager: IFileManager;
     protected readonly getLogger: () => StructuredLogger;
     protected readonly env: Env;
@@ -30,7 +32,7 @@ export abstract class BaseAgentService {
     /**
      * Update agent state
      */
-    protected setState(newState: ReturnType<IStateManager['getState']>) {
+    protected setState(newState: BaseProjectState) {
         this.stateManager.setState(newState);
     }
 

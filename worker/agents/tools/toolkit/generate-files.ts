@@ -1,6 +1,6 @@
 import { ToolDefinition, ErrorResult } from '../types';
 import { StructuredLogger } from '../../../logger';
-import { CodingAgentInterface } from 'worker/agents/services/implementations/CodingAgent';
+import type { ICodingAgent } from "worker/agents/services/interfaces/ICodingAgent";
 import { FileConceptType } from 'worker/agents/schemas';
 
 export type GenerateFilesArgs = {
@@ -18,7 +18,7 @@ export type GenerateFilesResult =
 	| ErrorResult;
 
 export function createGenerateFilesTool(
-	agent: CodingAgentInterface,
+	agent: ICodingAgent,
 	logger: StructuredLogger,
 ): ToolDefinition<GenerateFilesArgs, GenerateFilesResult> {
 	return {
@@ -80,7 +80,7 @@ Provide detailed, specific requirements. The more detail, the better the results
 				logger.info('Generating files via phase implementation', {
 					phase_name,
 					requirementsCount: requirements.length,
-					filesCount: files.length,
+					filesCount: files.length
 				});
 
 				const result = await agent.generateFiles(phase_name, phase_description, requirements, files);
@@ -91,7 +91,7 @@ Provide detailed, specific requirements. The more detail, the better the results
 						purpose: f.purpose || '',
 						diff: f.diff,
 					})),
-					summary: `Generated ${result.files.length} file(s) for: ${phase_name}`,
+					summary: `Generated ${result.files.length} file(s) for: ${phase_name}`
 				};
 			} catch (error) {
 				return {

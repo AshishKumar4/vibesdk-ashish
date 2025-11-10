@@ -6,20 +6,18 @@ import {
 	useState,
 	type FormEvent,
 } from 'react';
-import { ArrowRight, Image as ImageIcon } from 'react-feather';
 import { useParams, useSearchParams, useNavigate } from 'react-router';
 import { MonacoEditor } from '../../components/monaco-editor/monaco-editor';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Expand, Github, GitBranch, LoaderCircle, RefreshCw, MoreHorizontal, RotateCcw, X } from 'lucide-react';
-import clsx from 'clsx';
+import { Expand, Github, GitBranch, RefreshCw, MoreHorizontal } from 'lucide-react';
 import { Blueprint } from './components/blueprint';
 import { FileExplorer } from './components/file-explorer';
-import { UserMessage, AIMessage } from './components/messages';
-import { PhaseTimeline } from './components/phase-timeline';
-import { PreviewIframe } from './components/preview-iframe';
 import { ViewModeSwitch } from './components/view-mode-switch';
+import { PreviewIframe } from './components/preview-iframe';
 import { DebugPanel, type DebugMessage } from './components/debug-panel';
-import { DeploymentControls } from './components/deployment-controls';
+import { ChatContainer } from './components/chat-container';
+import { ChatMessagesPanel } from './components/chat-messages-panel';
+import { ChatInput } from './components/chat-input';
+import { AppProjectSection } from './components/app-project-section';
 import { useChat, type FileType } from './hooks/use-chat';
 import { type ModelConfigsData, type BlueprintType, SUPPORTED_IMAGE_MIME_TYPES } from '@/api-types';
 import { Copy } from './components/copy';
@@ -27,7 +25,6 @@ import { useFileContentStream } from './hooks/use-file-content-stream';
 import { logger } from '@/utils/logger';
 import { useApp } from '@/hooks/use-app';
 import { useAuth } from '@/contexts/auth-context';
-import { AgentModeDisplay } from '@/components/agent-mode-display';
 import { useGitHubExport } from '@/hooks/use-github-export';
 import { GitHubExportModal } from '@/components/github-export-modal';
 import { GitCloneModal } from '@/components/shared/GitCloneModal';
@@ -35,12 +32,10 @@ import { ModelConfigInfo } from './components/model-config-info';
 import { useAutoScroll } from '@/hooks/use-auto-scroll';
 import { useImageUpload } from '@/hooks/use-image-upload';
 import { useDragDrop } from '@/hooks/use-drag-drop';
-import { ImageAttachmentPreview } from '@/components/image-attachment-preview';
 import { createAIMessage } from './utils/message-helpers';
-import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { sendWebSocketMessage } from './utils/websocket-helpers';
+import { Button } from '@/components/ui/button';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 export default function Chat() {
 	const { chatId: urlChatId } = useParams();
@@ -48,6 +43,8 @@ export default function Chat() {
 	const [searchParams] = useSearchParams();
 	const userQuery = searchParams.get('query');
 	const agentMode = searchParams.get('agentMode') || 'deterministic';
+	const projectType = searchParams.get('projectType') as 'app' | 'workflow' | null;
+	const deploymentTarget = searchParams.get('deploymentTarget') as 'platform' | 'self-hosted' | null;
 	
 	// Extract images from URL params if present
 	const userImages = useMemo(() => {
@@ -121,6 +118,8 @@ export default function Chat() {
 		phaseTimeline,
 		isThinking,
 		onCompleteBootstrap,
+		// Project adapter
+		projectAdapter,
 		// Deployment and generation control
 		isDeploying,
 		cloudflareDeploymentUrl,
@@ -144,6 +143,8 @@ export default function Chat() {
 		query: userQuery,
 		images: userImages,
 		agentMode: agentMode as 'deterministic' | 'smart',
+		projectType: projectType || undefined,
+		deploymentTarget: deploymentTarget || undefined,
 		onDebugMessage: addDebugMessage,
 	});
 
@@ -152,6 +153,11 @@ export default function Chat() {
 	const { user } = useAuth();
 
 	const navigate = useNavigate();
+
+	// Get the timeline component from the adapter
+	const TimelineComponent = useMemo(() => {
+		return projectAdapter?.getTimelineComponent() || AppProjectSection;
+	}, [projectAdapter]);
 
 	const [activeFilePath, setActiveFilePath] = useState<string>();
 	const [view, setView] = useState<'editor' | 'preview' | 'blueprint' | 'terminal'>(
@@ -222,11 +228,6 @@ export default function Chat() {
 	const [showTooltip, setShowTooltip] = useState(false);
 	
 	// Word count utilities
-	const MAX_WORDS = 4000;
-	const countWords = (text: string): number => {
-		return text.trim().split(/\s+/).filter(word => word.length > 0).length;
-	};
-
 	const { images, addImages, removeImage, clearImages, isProcessing } = useImageUpload({
 		onError: (error) => {
 			console.error('Chat image upload error:', error);
@@ -526,108 +527,39 @@ export default function Chat() {
 
 	return (
 		<div className="size-full flex flex-col min-h-0 text-text-primary">
-			<div className="flex-1 flex min-h-0 overflow-hidden justify-center">
-				<motion.div
-					layout="position"
-					className="flex-1 shrink-0 flex flex-col basis-0 max-w-lg relative z-10 h-full min-h-0"
-				>
-					<div 
-					className={clsx(
-						'flex-1 overflow-y-auto min-h-0 chat-messages-scroll',
-						isDebugging && 'animate-debug-pulse'
-					)} 
-					ref={messagesContainerRef}
-				>
-						<div className="pt-5 px-4 pb-4 text-sm flex flex-col gap-5">
-							{appLoading ? (
-								<div className="flex items-center gap-2 text-text-tertiary">
-									<LoaderCircle className="size-4 animate-spin" />
-									Loading app...
+		<ChatContainer
+			showRightPanel={showMainView}
+			leftPanel={
+				<>
+					{/* Chat Messages */}
+					<ChatMessagesPanel
+						appLoading={appLoading}
+						appTitle={appTitle}
+						chatId={chatId}
+						query={query}
+						displayQuery={displayQuery}
+						agentMode={agentMode as 'deterministic' | 'smart'}
+						showAgentMode={!!import.meta.env.VITE_AGENT_MODE_ENABLED}
+						mainMessage={mainMessage}
+						mainMessageActions={
+							chatId && mainMessage ? (
+								<div className="absolute right-1 top-1">
+									<Button
+										variant="ghost"
+										size="icon"
+										className="hover:bg-bg-3/80 cursor-pointer"
+										onClick={() => setIsResetDialogOpen(true)}
+									>
+										<MoreHorizontal className="h-4 w-4" />
+										<span className="sr-only">Chat actions</span>
+									</Button>
 								</div>
-							) : (
-								<>
-									{(appTitle || chatId) && (
-								<div className="flex items-center justify-between mb-2">
-									<div className="text-lg font-semibold">{appTitle}</div>
-								</div>
-							)}
-									<UserMessage
-										message={query ?? displayQuery}
-									/>
-									{import.meta.env
-										.VITE_AGENT_MODE_ENABLED && (
-										<div className="flex justify-between items-center py-2 border-b border-border-primary/50 mb-4">
-											<AgentModeDisplay
-												mode={
-													agentMode as
-														| 'deterministic'
-														| 'smart'
-												}
-											/>
-										</div>
-									)}
-								</>
-							)}
-
-							{mainMessage && (
-							<div className="relative">
-								<AIMessage
-									message={mainMessage.content}
-									isThinking={mainMessage.ui?.isThinking}
-									toolEvents={mainMessage.ui?.toolEvents}
-								/>
-								{chatId && (
-									<div className="absolute right-1 top-1">
-										<DropdownMenu>
-											<DropdownMenuTrigger asChild>
-												<Button
-													variant="ghost"
-													size="icon"
-													className="hover:bg-bg-3/80 cursor-pointer"
-												>
-													<MoreHorizontal className="h-4 w-4" />
-													<span className="sr-only">Chat actions</span>
-												</Button>
-											</DropdownMenuTrigger>
-											<DropdownMenuContent align="end" className="w-56">
-												<DropdownMenuItem
-														onClick={(e) => {
-															e.preventDefault();
-															setIsResetDialogOpen(true);
-														}}
-												>
-													<RotateCcw className="h-4 w-4 mr-2" />
-													Reset conversation
-												</DropdownMenuItem>
-											</DropdownMenuContent>
-										</DropdownMenu>
-									</div>
-								)}
-							</div>
-						)}
-
-							{otherMessages
-								.filter(message => message.role === 'assistant' && message.ui?.isThinking)
-								.map((message) => (
-									<div key={message.conversationId} className="mb-4">
-										<AIMessage
-											message={message.content}
-											isThinking={true}
-											toolEvents={message.ui?.toolEvents}
-										/>
-									</div>
-								))}
-
-							{isThinking && !otherMessages.some(m => m.ui?.isThinking) && (
-								<div className="mb-4">
-									<AIMessage
-										message="Planning next phase..."
-										isThinking={true}
-									/>
-								</div>
-							)}
-
-							<PhaseTimeline
+							) : undefined
+						}
+						thinkingMessages={otherMessages}
+						otherMessages={otherMessages}
+						projectContent={
+							<TimelineComponent
 								projectStages={projectStages}
 								phaseTimeline={phaseTimeline}
 								files={files}
@@ -638,218 +570,67 @@ export default function Chat() {
 								isPreviewDeploying={isPreviewDeploying}
 								progress={progress}
 								total={total}
-								parentScrollRef={messagesContainerRef}
-								onViewChange={(viewMode) => {
+								parentScrollRef={messagesContainerRef as React.RefObject<HTMLDivElement>}
+								onViewChange={(viewMode: 'editor' | 'preview' | 'blueprint' | 'terminal') => {
 									setView(viewMode);
 									hasSwitchedFile.current = true;
 								}}
 								chatId={chatId}
+								isPhase1Complete={isPhase1Complete}
 								isDeploying={isDeploying}
-								handleDeployToCloudflare={handleDeployToCloudflare}
+								deploymentUrl={cloudflareDeploymentUrl}
+								cloudflareDeploymentUrl={cloudflareDeploymentUrl}
+								instanceId={chatId || ''}
+								isRedeployReady={isRedeployReady}
+								deploymentError={deploymentError}
+								appId={app?.id || chatId}
+								appVisibility={app?.visibility}
+								isGenerating={isGenerating || isGeneratingBlueprint}
+								isPaused={isGenerationPaused}
+								onDeploy={handleDeployToCloudflare}
+								onStopGeneration={handleStopGeneration}
+								onResumeGeneration={handleResumeGeneration}
+								onVisibilityUpdate={(newVisibility: string) => {
+									if (app) {
+										app.visibility = newVisibility as 'public' | 'private';
+									}
+								}}
 								runtimeErrorCount={runtimeErrorCount}
 								staticIssueCount={staticIssueCount}
 								isDebugging={isDebugging}
-								isGenerating={isGenerating}
 								isThinking={isThinking}
+								handleDeployToCloudflare={handleDeployToCloudflare}
+								deploymentControlsRef={deploymentControlsRef as React.RefObject<HTMLDivElement>}
 							/>
-
-							{/* Deployment and Generation Controls */}
-							{chatId && (
-								<motion.div
-									ref={deploymentControlsRef}
-									initial={{ opacity: 0, y: 20 }}
-									animate={{ opacity: 1, y: 0 }}
-									transition={{ duration: 0.3, delay: 0.2 }}
-									className="px-4 mb-6"
-								>
-									<DeploymentControls
-										isPhase1Complete={isPhase1Complete}
-										isDeploying={isDeploying}
-										deploymentUrl={cloudflareDeploymentUrl}
-										instanceId={chatId || ''}
-										isRedeployReady={isRedeployReady}
-										deploymentError={deploymentError}
-										appId={app?.id || chatId}
-										appVisibility={app?.visibility}
-										isGenerating={
-											isGenerating ||
-											isGeneratingBlueprint
-										}
-										isPaused={isGenerationPaused}
-										onDeploy={handleDeployToCloudflare}
-										onStopGeneration={handleStopGeneration}
-										onResumeGeneration={
-											handleResumeGeneration
-										}
-										onVisibilityUpdate={(newVisibility) => {
-											// Update app state if needed
-											if (app) {
-												app.visibility = newVisibility;
-											}
-										}}
-									/>
-								</motion.div>
-							)}
-
-							{otherMessages
-								.filter(message => !message.ui?.isThinking)
-								.map((message) => {
-									if (message.role === 'assistant') {
-										return (
-											<AIMessage
-												key={message.conversationId}
-												message={message.content}
-												isThinking={message.ui?.isThinking}
-												toolEvents={message.ui?.toolEvents}
-											/>
-										);
-									}
-									return (
-										<UserMessage
-											key={message.conversationId}
-											message={message.content}
-										/>
-									);
-								})}
-
-						</div>
-					</div>
-
-					<form
-                        ref={chatFormRef}
-                        onSubmit={onNewMessage}
-                        className="shrink-0 p-4 pb-5 bg-transparent"
-                        {...chatDragHandlers}
-                    >
-					<input
-						ref={imageInputRef}
-						type="file"
-						accept={SUPPORTED_IMAGE_MIME_TYPES.join(',')}
-						multiple
-						onChange={(e) => {
-							const files = Array.from(e.target.files || []);
-							if (files.length > 0) {
-								addImages(files);
-							}
-							e.target.value = '';
-						}}
-						className="hidden"
-						disabled={isChatDisabled}
+						}
+						isDebugging={isDebugging}
+						isThinking={isThinking}
+						messagesContainerRef={messagesContainerRef as React.RefObject<HTMLDivElement>}
 					/>
-					<div className="relative">
-						{isChatDragging && (
-							<div className="absolute inset-0 flex items-center justify-center bg-accent/10 backdrop-blur-sm rounded-xl z-50 pointer-events-none">
-								<p className="text-accent font-medium">Drop images here</p>
-							</div>
-						)}
-						{images.length > 0 && (
-							<div className="mb-2">
-								<ImageAttachmentPreview
-									images={images}
-									onRemove={removeImage}
-									compact
-								/>
-							</div>
-						)}
-						<textarea
-							value={newMessage}
-							onChange={(e) => {
-								const newValue = e.target.value;
-								const newWordCount = countWords(newValue);
-								
-								// Only update if within word limit
-								if (newWordCount <= MAX_WORDS) {
-									setNewMessage(newValue);
-									const ta = e.currentTarget;
-									ta.style.height = 'auto';
-									ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
-								}
-							}}
-								onKeyDown={(e) => {
-									if (e.key === 'Enter') {
-										if (!e.shiftKey) {
-											// Submit on Enter without Shift
-											e.preventDefault();
-											onNewMessage(e);
-										}
-										// Shift+Enter will create a new line (default textarea behavior)
-									}
-								}}
-								disabled={isChatDisabled}
-								placeholder={
-									isDebugging
-										? 'Deep debugging in progress... Please abort to continue'
-										: isChatDisabled
-											? 'Please wait for blueprint completion...'
-											: isRunning
-												? 'Chat with AI while generating...'
-												: 'Chat with AI...'
-								}
-								rows={1}
-								className="w-full bg-bg-2 border border-text-primary/10 rounded-xl px-3 pr-20 py-2 text-sm outline-none focus:border-white/20 drop-shadow-2xl text-text-primary placeholder:!text-text-primary/50 disabled:opacity-50 disabled:cursor-not-allowed resize-none overflow-y-auto no-scrollbar min-h-[36px] max-h-[120px]"
-								style={{
-									// Auto-resize based on content
-									height: 'auto',
-									minHeight: '36px'
-								}}
-								ref={(textarea) => {
-									if (textarea) {
-										// Auto-resize textarea based on content
-										textarea.style.height = 'auto';
-										textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
-									}
-								}}
-							/>
-							<div className="absolute right-1.5 bottom-2.5 flex items-center gap-1">
-								{(isGenerating || isGeneratingBlueprint || isDebugging) && (
-									<button
-										type="button"
-										onClick={() => {
-											if (websocket) {
-												sendWebSocketMessage(websocket, 'stop_generation');
-											}
-										}}
-										className="p-1.5 rounded-md hover:bg-red-500/10 text-text-tertiary hover:text-red-500 transition-all duration-200 group relative"
-										aria-label="Stop generation"
-										title="Stop generation"
-									>
-										<X className="size-4" strokeWidth={2} />
-										<span className="absolute -top-8 right-0 px-2 py-1 bg-bg-1 border border-border-primary rounded text-xs text-text-secondary whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-											Stop
-										</span>
-									</button>
-								)}
-								<button
-									type="button"
-									onClick={() => imageInputRef.current?.click()}
-									disabled={isChatDisabled || isProcessing}
-									className="p-1.5 rounded-md hover:bg-bg-3 text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-									aria-label="Upload image"
-									title="Upload image"
-								>
-									<ImageIcon className="size-4" strokeWidth={1.5} />
-								</button>
-								<button
-									type="submit"
-									disabled={!newMessage.trim() || isChatDisabled}
-									className="p-1.5 rounded-md bg-accent/90 hover:bg-accent/80 disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-transparent text-white disabled:text-text-primary transition-colors"
-								>
-									<ArrowRight className="size-4" />
-								</button>
-							</div>
-						</div>
-					</form>
-				</motion.div>
-
-				<AnimatePresence>
-					{showMainView && (
-					<motion.div
-						layout="position"
-						className="flex-1 flex shrink-0 basis-0 p-4 pl-0 ml-2 z-30 min-h-0"
-						initial={{ opacity: 0, scale: 0.84 }}
-						animate={{ opacity: 1, scale: 1 }}
-						transition={{ duration: 0.3, ease: 'easeInOut' }}
-					>
+					
+					{/* Chat Input */}
+					<ChatInput
+						newMessage={newMessage}
+						onNewMessageChange={setNewMessage}
+						onSubmit={onNewMessage}
+						images={images}
+						onAddImages={addImages}
+						onRemoveImage={removeImage}
+						imageInputRef={imageInputRef as React.RefObject<HTMLInputElement>}
+						isProcessing={isProcessing}
+						isDragging={isChatDragging}
+						dragHandlers={chatDragHandlers}
+						isChatDisabled={isChatDisabled}
+						isDebugging={isDebugging}
+						isGenerating={isGenerating}
+						isGeneratingBlueprint={isGeneratingBlueprint}
+						websocket={websocket}
+						chatFormRef={chatFormRef as React.RefObject<HTMLFormElement>}
+					/>
+				</>
+			}
+			rightPanel={
+				<>
 							{view === 'preview' && previewUrl && (
 								<div className="flex-1 flex flex-col bg-bg-3 rounded-xl shadow-md shadow-bg-2 overflow-hidden border border-border-primary">
 									<div className="grid grid-cols-3 px-2 h-10 border-b bg-bg-2">
@@ -1183,7 +964,7 @@ export default function Chat() {
 														lineNumbers: 'on',
 														scrollBeyondLastLine: false,
 														fontSize: 13,
-														theme: 'v1-dev',
+														theme: 'vibesdk',
 														automaticLayout: true,
 													}}
 													find={
@@ -1206,10 +987,9 @@ export default function Chat() {
 									</div>
 								</div>
 							)}
-						</motion.div>
-					)}
-				</AnimatePresence>
-			</div>
+				</>
+			}
+		/>
 
 			{/* Debug Panel */}
 			<DebugPanel
