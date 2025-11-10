@@ -800,8 +800,10 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState> implemen
         }
     }
     
-    async fetchRuntimeErrors(clear: boolean = true): Promise<RuntimeError[]> {
-        await this.deploymentManager.waitForPreview();
+    async fetchRuntimeErrors(clear: boolean = true, shouldWait: boolean = true): Promise<RuntimeError[]> {
+        if (shouldWait) {
+            await this.deploymentManager.waitForPreview();
+        }
 
         try {
             const errors = await this.deploymentManager.fetchRuntimeErrors(clear);
@@ -819,7 +821,8 @@ export abstract class BaseProjectAgent<TState extends BaseProjectState> implemen
             this.logger().error("Exception fetching runtime errors:", error);
             // If fetch fails, initiate redeploy
             this.deployToSandbox();
-            return [];
+            const message = "<runtime errors not available at the moment as preview is not deployed>";
+            return [{ message, timestamp: new Date().toISOString(), level: 0, rawOutput: message }];
         }
     }
     

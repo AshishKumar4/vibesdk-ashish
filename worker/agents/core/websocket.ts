@@ -1,7 +1,7 @@
 import { Connection } from 'agents';
 import { createLogger } from '../../logger';
 import { WebSocketMessageRequests, WebSocketMessageResponses } from '../constants';
-import { SimpleCodeGeneratorAgent } from './simpleGeneratorAgent';
+import { PhasicCodingAgent } from './phasicCodingAgent';
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_SIZE_BYTES } from '../../types/image-attachment';
 import { sendToConnection, sendError } from './websocketBroadcast';
 import type { BaseProjectAgent } from './baseProjectAgent';
@@ -67,8 +67,8 @@ export function handleWebSocketMessage<TState extends BaseProjectState>(
                 });
                 break;
             case WebSocketMessageRequests.CAPTURE_SCREENSHOT:
-                // Only supported for app agents
-                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                // Only supported for app agents (PhasicCodingAgent)
+                if (!(agent instanceof PhasicCodingAgent)) {
                     sendError(connection, 'Screenshot capture not supported for this agent type');
                     return;
                 }
@@ -90,7 +90,7 @@ export function handleWebSocketMessage<TState extends BaseProjectState>(
                 const wasCancelled = agent.cancelCurrentInference();
                 
                 // Clear shouldBeGenerating flag
-                if (agent instanceof SimpleCodeGeneratorAgent) {
+                if (agent instanceof PhasicCodingAgent) {
                     agent.updateState({ shouldBeGenerating: false } as Partial<TState>);
                 }
                 
@@ -101,8 +101,8 @@ export function handleWebSocketMessage<TState extends BaseProjectState>(
                 });
                 break;
             case WebSocketMessageRequests.RESUME_GENERATION:
-                // Only supported for app agents
-                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                // Only supported for app agents (PhasicCodingAgent)
+                if (!(agent instanceof PhasicCodingAgent)) {
                     sendError(connection, 'Resume generation not supported for this agent type');
                     return;
                 }
@@ -130,8 +130,8 @@ export function handleWebSocketMessage<TState extends BaseProjectState>(
                 });
                 break;
             case WebSocketMessageRequests.USER_SUGGESTION:
-                // Only supported for app agents (SimpleCodeGeneratorAgent)
-                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                // Only supported for app agents (PhasicCodingAgent)
+                if (!(agent instanceof PhasicCodingAgent)) {
                     sendError(connection, 'USER_SUGGESTION not supported for this agent type');
                     return;
                 }
@@ -169,8 +169,8 @@ export function handleWebSocketMessage<TState extends BaseProjectState>(
                 });
                 break;
             case WebSocketMessageRequests.GET_MODEL_CONFIGS:
-                // Only supported for app agents
-                if (!(agent instanceof SimpleCodeGeneratorAgent)) {
+                // Only supported for app agents (PhasicCodingAgent)
+                if (!(agent instanceof PhasicCodingAgent)) {
                     sendError(connection, 'Model configs not available for this agent type');
                     return;
                 }

@@ -108,10 +108,9 @@ export interface WorkflowMetadata {
 
 /**
  * WorkflowGenState - Workflow-specific state extending base project state
+ * Note: workflowCode is stored in generatedFilesMap['src/index.ts'], not duplicated here
  */
 export interface WorkflowGenState extends BaseProjectState {
-    workflowCode: string | null;
-    workflowClassName: string | null;
     workflowMetadata: WorkflowMetadata | null;
     deploymentUrl: string | null;
     deploymentStatus: 'idle' | 'deploying' | 'deployed' | 'failed';

@@ -4,16 +4,27 @@ import { FileState } from '../../core/state';
 import { TemplateDetails } from '../../../services/sandbox/sandboxTypes';
 
 export class WorkflowContext extends BaseProjectContext {
+    public readonly workflowMetadata: WorkflowMetadata | null;
+    
     constructor(
         query: string,
         templateDetails: TemplateDetails,
         dependencies: Record<string, string>,
         allFiles: FileState[],
         commandsHistory: string[],
-        public readonly workflowCode: string | null,
-        public readonly workflowMetadata: WorkflowMetadata | null
+        workflowMetadata: WorkflowMetadata | null
     ) {
         super(query, templateDetails, dependencies, allFiles, commandsHistory);
+        this.workflowMetadata = workflowMetadata;
+    }
+    
+    /**
+     * Get workflow code from allFiles (src/index.ts)
+     * Computed property - no need to duplicate in state
+     */
+    get workflowCode(): string | null {
+        const workflowFile = this.allFiles.find(f => f.filePath === 'src/index.ts');
+        return workflowFile?.fileContents || null;
     }
 
     static from(
@@ -30,7 +41,6 @@ export class WorkflowContext extends BaseProjectContext {
             dependencies,
             allFiles,
             commandsHistory,
-            state.workflowCode,
             state.workflowMetadata
         );
     }

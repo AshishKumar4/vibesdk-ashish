@@ -7,6 +7,7 @@ import { BaseProjectContext } from '../domain/values/BaseProjectContext';
 import { SCOFFormat, SCOFParsingState } from '../output-formats/streaming-formats/scof';
 import { CodeGenerationStreamingState } from '../output-formats/streaming-formats/base';
 import { FileProcessing } from '../domain/pure/FileProcessing';
+import { CodeSerializerType } from '../utils/codeSerializers';
 
 export interface SimpleCodeGenerationInputs {
     phaseName: string;
@@ -26,11 +27,17 @@ const SYSTEM_PROMPT = `You are an expert Cloudflare developer specializing in Cl
 
 Your task is to generate production-ready code based on the provided specifications.
 
+## Original User Request
+{{userQuery}}
+
 ## Project Context
 {{projectContext}}
 
 ## Template Information
 {{template}}
+
+## Previously Generated Files
+{{existingFiles}}
 
 ## Critical Guidelines
 - Write clean, type-safe TypeScript code
@@ -39,7 +46,9 @@ Your task is to generate production-ready code based on the provided specificati
 - For Workers: use standard Worker patterns with Request/Response
 - Ensure all imports are correct
 - Add proper error handling
-- Include JSDoc comments where helpful`;
+- Include JSDoc comments where helpful
+- Consider the context of existing files when generating new code
+- Ensure new code integrates well with previously generated files`;
 
 const USER_PROMPT = `Generate code for the following phase:
 
@@ -66,6 +75,22 @@ const formatFiles = (files: FileConceptType[]): string => {
     }).join('\n\n');
 };
 
+const formatExistingFiles = (allFiles: BaseProjectContext['allFiles']): string => {
+    if (!allFiles || allFiles.length === 0) {
+        return 'No files generated yet. This is the first generation phase.';
+    }
+    
+    // Convert FileState[] to FileOutputType[] format for serializer
+    const filesForSerializer: FileOutputType[] = allFiles.map(file => ({
+        filePath: file.filePath,
+        fileContents: file.fileContents,
+        filePurpose: file.filePurpose || 'Previously generated file'
+    }));
+    
+    // Use existing serializer from PROMPT_UTILS
+    return PROMPT_UTILS.serializeFiles(filesForSerializer, CodeSerializerType.SIMPLE);
+};
+
 export class SimpleCodeGenerationOperation extends AgentOperation<
     SimpleCodeGenerationInputs,
     SimpleCodeGenerationOutputs
@@ -81,18 +106,26 @@ export class SimpleCodeGenerationOperation extends AgentOperation<
             phaseName,
             phaseDescription,
             fileCount: files.length,
-            requirementCount: requirements.length
+            requirementCount: requirements.length,
+            existingFilesCount: context.allFiles.length,
+            hasUserQuery: !!context.query,
+            hasTemplateDetails: !!context.templateDetails
         });
 
         // Build project context
         const projectContext = context.templateDetails 
             ? PROMPT_UTILS.serializeTemplate(context.templateDetails)
             : 'No template context available';
+        
+        // Format existing files for context
+        const existingFilesContext = formatExistingFiles(context.allFiles);
 
-        // Build system message with context
+        // Build system message with full context
         const systemPrompt = PROMPT_UTILS.replaceTemplateVariables(SYSTEM_PROMPT, {
+            userQuery: context.query || 'No specific user query available',
             projectContext,
-            template: context.templateDetails ? PROMPT_UTILS.serializeTemplate(context.templateDetails) : ''
+            template: context.templateDetails ? PROMPT_UTILS.serializeTemplate(context.templateDetails) : 'No template information',
+            existingFiles: existingFilesContext
         });
 
         // Build user message with requirements

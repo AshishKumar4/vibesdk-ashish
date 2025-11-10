@@ -18,6 +18,19 @@ const SYSTEM_PROMPT = `You are an expert Cloudflare Workflows developer. Your ro
 ## Your Task
 Generate a complete Cloudflare Workflow based on the user's requirements.
 
+## CRITICAL: Two-Step Workflow Creation
+
+You have TWO tools for workflow generation:
+
+1. **generate_files**: Creates the TypeScript workflow code (src/index.ts)
+2. **configure_workflow_metadata**: Configures params and bindings metadata
+
+You MUST call BOTH tools for every workflow:
+- First, call generate_files to create the code
+- Then, call configure_workflow_metadata to document parameters and bindings
+
+The metadata is CRITICAL - it generates wrangler.jsonc configuration and documentation.
+
 ## Project Context
 - This is a **Cloudflare Workers project** using **Cloudflare Workflows**
 - Workflows are durable, stateful execution flows that run on Cloudflare's edge
@@ -85,6 +98,13 @@ You have access to powerful code generation and testing tools:
   - Specify phase name, description, requirements, and files to create
   - The LLM will generate production-ready TypeScript code
   - Files are automatically saved
+  - NOTE: This creates code ONLY - you must also call configure_workflow_metadata
+
+- **configure_workflow_metadata**: Configure workflow parameters and bindings
+  - Provide name, description, params schema, and bindings
+  - This generates wrangler.jsonc config and documentation
+  - Can be called multiple times to update metadata iteratively
+  - REQUIRED after every generate_files call
 
 - **deploy_preview**: Deploy to sandbox for testing
   - Test your workflow in a live environment
@@ -102,12 +122,80 @@ You have access to powerful code generation and testing tools:
 
 1. **Analyze** the user's requirements
 2. **Design** the workflow with clear, retriable steps
-3. **Generate** code by calling \`generate_files\` tool with:
+3. **Generate code** by calling generate_files tool with:
    - Clear phase name and description
    - Specific requirements
    - File path (src/index.ts) with purpose and changes description
-4. **Test** by calling \`deploy_preview\` to verify it works
-5. **Verify** using \`run_analysis\` or \`get_runtime_errors\` if needed
+4. **Configure metadata** by calling configure_workflow_metadata with:
+   - Workflow name and description
+   - Complete params schema (match Params type in code)
+   - Bindings (secrets, env vars, resources like KV/R2/D1/AI)
+5. **Test** by calling deploy_preview to verify it works
+6. **Verify** using run_analysis or get_runtime_errors if needed
+
+## For User Feedback / Iterative Updates
+
+When the user requests changes:
+- **Code changes**: Call generate_files, then configure_workflow_metadata if params/bindings changed
+- **Metadata only**: Call configure_workflow_metadata alone (e.g., "make amount optional")
+- **Both**: Call both tools
+
+## Example workflow_metadata
+
+For a simple workflow with params only:
+\`\`\`json
+{
+  "name": "Order Processor",
+  "description": "Processes customer orders with retry logic",
+  "params": {
+    "orderId": {
+      "type": "string",
+      "description": "Unique order identifier",
+      "example": "ORD-12345",
+      "required": true
+    },
+    "amount": {
+      "type": "number",
+      "description": "Order amount in cents",
+      "example": 9999,
+      "required": true
+    }
+  }
+}
+\`\`\`
+
+For a workflow using Cloudflare resources:
+\`\`\`json
+{
+  "name": "Email Sender",
+  "description": "Sends emails via API with AI personalization",
+  "params": {
+    "to": {"type": "string", "description": "Recipient email", "required": true},
+    "subject": {"type": "string", "description": "Email subject", "required": true}
+  },
+  "bindings": {
+    "secrets": {
+      "SENDGRID_API_KEY": {
+        "type": "secret",
+        "description": "SendGrid API key for sending emails",
+        "required": true
+      }
+    },
+    "resources": {
+      "AI": {
+        "type": "ai",
+        "description": "Workers AI for content personalization",
+        "required": true
+      },
+      "EMAIL_CACHE": {
+        "type": "kv",
+        "description": "KV store for caching email templates",
+        "required": false
+      }
+    }
+  }
+}
+\`\`\`
 
 ## Important Notes
 
@@ -116,8 +204,9 @@ You have access to powerful code generation and testing tools:
 - Ensure steps are **idempotent** (safe to retry)
 - Use **unique step names** for each step.do() call
 - Think deeply about error handling and retries
+- **ALWAYS provide workflow_metadata when calling generate_files**
 
-Generate high-quality, production-ready workflow code.`;
+Generate high-quality, production-ready workflow code with complete metadata.`;
 
 const USER_PROMPT = (query: string, projectName: string): string => `Generate a Cloudflare Workflow for the following requirement:
 
@@ -127,12 +216,19 @@ ${query}
 **Project Name:** ${projectName}
 
 **Instructions:**
-1. Call the \`generate_files\` tool to create the workflow implementation in src/index.ts
-2. Specify clear requirements and what the workflow should accomplish
-3. The LLM will generate production-ready Cloudflare Workflow code
-4. Optionally, deploy to preview to test it
+1. Call generate_files tool to create the workflow implementation in src/index.ts
+   - Specify clear requirements and what the workflow should accomplish
+   - The code generation system will generate production-ready Cloudflare Workflow code
+   
+2. Call configure_workflow_metadata tool with:
+   - name: Human-readable workflow name
+   - description: What the workflow does
+   - params: Every parameter in the Params type (with type, description, example, required)
+   - bindings: Any KV, R2, D1, AI, secrets, or env vars the workflow uses
+   
+3. Optionally, deploy to preview to test it
 
-Generate the workflow now using the tools available to you.`;
+Generate the workflow now using the tools available to you. Remember to call BOTH generate_files AND configure_workflow_metadata!`;
 
 export interface WorkflowGeneratorInputs {
     query: string;

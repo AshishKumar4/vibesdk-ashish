@@ -1,5 +1,5 @@
 
-import { SmartCodeGeneratorAgent } from './core/smartGeneratorAgent';
+import { ProjectAgent } from './core/projectAgent';
 import { getAgentByName } from 'agents';
 import { CodeGenState, WorkflowGenState } from './core/state';
 import { generateId } from '../utils/idGenerator';
@@ -13,14 +13,14 @@ import type { ImageAttachment } from '../types/image-attachment';
 import { BaseSandboxService } from 'worker/services/sandbox/BaseSandboxService';
 import { ProjectType } from './core/types';
 
-export async function getAgentStub(env: Env, agentId: string) : Promise<DurableObjectStub<SmartCodeGeneratorAgent>> {
-    return getAgentByName<Env, SmartCodeGeneratorAgent>(env.CodeGenObject, agentId);
+export async function getAgentStub(env: Env, agentId: string) : Promise<DurableObjectStub<ProjectAgent>> {
+    return getAgentByName<Env, ProjectAgent>(env.CodeGenObject, agentId);
 }
 
-export async function createAgent(env: Env, agentId: string, projectType: ProjectType): Promise<DurableObjectStub<SmartCodeGeneratorAgent>> {
-    // Always returns SmartCodeGeneratorAgent stub - the projectType is passed via props
-    // and the SmartCodeGeneratorAgent constructor routes to the appropriate concrete agent
-    return getAgentByName<Env, SmartCodeGeneratorAgent>(env.CodeGenObject, agentId, {
+export async function createAgent(env: Env, agentId: string, projectType: ProjectType): Promise<DurableObjectStub<ProjectAgent>> {
+    // Always returns ProjectAgent stub - the projectType is passed via props
+    // and the ProjectAgent constructor routes to the appropriate concrete agent
+    return getAgentByName<Env, ProjectAgent>(env.CodeGenObject, agentId, {
         props: { projectType }
     });
 }
@@ -30,7 +30,7 @@ export async function getAgentState(env: Env, agentId: string) : Promise<CodeGen
     return await agentInstance.getFullState() as CodeGenState | WorkflowGenState;
 }
 
-export async function cloneAgent(env: Env, agentId: string) : Promise<{newAgentId: string, newAgent: DurableObjectStub<SmartCodeGeneratorAgent>}> {
+export async function cloneAgent(env: Env, agentId: string) : Promise<{newAgentId: string, newAgent: DurableObjectStub<ProjectAgent>}> {
     const agentInstance = await getAgentStub(env, agentId);
     if (!agentInstance || !await agentInstance.isInitialized()) {
         throw new Error(`Agent ${agentId} not found`);

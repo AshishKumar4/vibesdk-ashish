@@ -9,6 +9,7 @@ export interface CodeGenArgs {
     selectedTemplate?: string;
     agentMode?: 'deterministic' | 'smart';
     projectType?: ProjectType;
+    deploymentTarget?: 'platform' | 'self-hosted';
     images?: ImageAttachment[];
 }
 

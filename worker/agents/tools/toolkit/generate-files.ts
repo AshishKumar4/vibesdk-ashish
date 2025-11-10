@@ -80,7 +80,7 @@ Provide detailed, specific requirements. The more detail, the better the results
 				logger.info('Generating files via phase implementation', {
 					phase_name,
 					requirementsCount: requirements.length,
-					filesCount: files.length,
+					filesCount: files.length
 				});
 
 				const result = await agent.generateFiles(phase_name, phase_description, requirements, files);
@@ -91,7 +91,7 @@ Provide detailed, specific requirements. The more detail, the better the results
 						purpose: f.purpose || '',
 						diff: f.diff,
 					})),
-					summary: `Generated ${result.files.length} file(s) for: ${phase_name}`,
+					summary: `Generated ${result.files.length} file(s) for: ${phase_name}`
 				};
 			} catch (error) {
 				return {

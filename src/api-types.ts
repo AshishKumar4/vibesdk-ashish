@@ -144,12 +144,17 @@ export type {
 } from 'worker/agents/schemas';
 
 export type { 
-  CodeGenState 
+  CodeGenState,
+  WorkflowGenState,
+  WorkflowMetadata,
+  BaseProjectState
 } from 'worker/agents/core/state';
 
 export type {
   ConversationMessage,
 } from 'worker/agents/inferutils/common';
+
+export type { ProjectType } from 'worker/agents/core/types';
 
 export type { 
   RuntimeError,
@@ -271,3 +276,50 @@ export type {
     GitHubExportOptions,
     GitHubExportResult,
 } from 'worker/services/github/types';
+
+// Project Type System
+export type DeploymentTarget = 'platform' | 'self-hosted';
+
+// Cloudflare Authentication
+export interface CloudflareAuthStatus {
+  authenticated: boolean;
+  account?: {
+    id: string;
+    email: string;
+    name?: string;
+  };
+}
+
+export interface CloudflareTokenValidation {
+  valid: boolean;
+  account?: {
+    id: string;
+    email: string;
+    name?: string;
+  };
+  error?: string;
+}
+
+// Workflow Execution (frontend display)
+export interface WorkflowExecution {
+  id: string;
+  appId: string;
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  params: Record<string, unknown>;
+  result?: unknown;
+  error?: string;
+  logs?: string[];
+  startedAt: string;
+  completedAt?: string;
+  duration?: number;
+  currentStep?: string;
+}
+
+// Workflow Step (for diagram visualization)
+export interface WorkflowStep {
+  id: string;
+  name: string;
+  type: 'http' | 'kv' | 'r2' | 'd1' | 'ai' | 'sleep' | 'wait' | 'action';
+  line: number;
+  bindings?: string[];
+}

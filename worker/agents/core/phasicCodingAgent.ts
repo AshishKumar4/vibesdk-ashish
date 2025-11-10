@@ -53,8 +53,11 @@ interface Operations {
     processUserMessage: UserConversationProcessor;
 }
 
-/** App project agent: blueprint → phases → implementation → deployment. */
-export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> implements IAppBuilderAgent {
+/** 
+ * Phasic Coding Agent: Deterministic blueprint → phases → implementation → deployment.
+ * Used for app projects with structured phase-based generation.
+ */
+export class PhasicCodingAgent extends BaseProjectAgent<CodeGenState> implements IAppBuilderAgent {
     private static readonly PROJECT_NAME_PREFIX_MAX_LENGTH = 20;
 
     protected projectSetupAssistant: ProjectSetupAssistant | undefined;
@@ -142,13 +145,13 @@ export class SimpleCodeGeneratorAgent extends BaseProjectAgent<CodeGenState> imp
         const projectName = generateProjectName(
             blueprint?.projectName || templateInfo.templateDetails.name,
             generateNanoId(),
-            SimpleCodeGeneratorAgent.PROJECT_NAME_PREFIX_MAX_LENGTH
+            PhasicCodingAgent.PROJECT_NAME_PREFIX_MAX_LENGTH
         );
         
         this.logger().info('Generated project name', { projectName });
         
         this.setState({
-            ...SimpleCodeGeneratorAgent.INITIAL_STATE,
+            ...PhasicCodingAgent.INITIAL_STATE,
             projectName,
             query,
             blueprint,

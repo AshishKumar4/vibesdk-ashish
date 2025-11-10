@@ -1,6 +1,6 @@
 import { Agent, AgentContext, Connection, ConnectionContext } from 'agents';
-import { SimpleCodeGeneratorAgent } from './simpleGeneratorAgent';
-import { SimpleWorkflowGeneratorAgent } from './simpleWorkflowGeneratorAgent';
+import { PhasicCodingAgent } from './phasicCodingAgent';
+import { AgenticCodingAgent } from './agenticCodingAgent';
 import { CodeGenState, WorkflowGenState } from './state';
 import type { ProjectType, AgentInitArgs } from './types';
 import type { AgentInfrastructure } from './baseProjectAgent';
@@ -11,22 +11,24 @@ import { GitHubExportResult } from 'worker/services/github';
 
 /** 
  * Durable Object router that delegates to project-specific implementations.
- * Acts as infrastructure layer for SimpleCodeGeneratorAgent ('app') or SimpleWorkflowGeneratorAgent ('workflow').
+ * Acts as infrastructure layer for PhasicCodingAgent ('app') or AgenticCodingAgent ('workflow').
+ * 
+ * This class is exported as CodeGeneratorAgent for backward compatibility with production.
  */
-export class SmartCodeGeneratorAgent 
+export class ProjectAgent 
     extends Agent<Env, CodeGenState | WorkflowGenState> 
     implements AgentInfrastructure<CodeGenState | WorkflowGenState> {
-    private activeAgent!: SimpleCodeGeneratorAgent | SimpleWorkflowGeneratorAgent;
+    private activeAgent!: PhasicCodingAgent | AgenticCodingAgent;
     private onStartDeferred?: { props?: Record<string, unknown>; resolve: () => void };
     
-    initialState: CodeGenState | WorkflowGenState = SimpleCodeGeneratorAgent.INITIAL_STATE;
+    initialState: CodeGenState | WorkflowGenState = PhasicCodingAgent.INITIAL_STATE;
 
     constructor(ctx: AgentContext, env: Env) {
         const projectTypeProp = (ctx.props as Record<string, unknown>)?.projectType as ProjectType | undefined;
         
         if (projectTypeProp === 'workflow') {
-            (SmartCodeGeneratorAgent.prototype as { initialState: WorkflowGenState }).initialState = 
-                SimpleWorkflowGeneratorAgent.INITIAL_STATE;
+            (ProjectAgent.prototype as { initialState: WorkflowGenState }).initialState = 
+                AgenticCodingAgent.INITIAL_STATE;
         }
         
         super(ctx, env);
@@ -35,10 +37,10 @@ export class SmartCodeGeneratorAgent
         
         if (actualProjectType === 'workflow') {
             // Safe cast: this is a workflow agent with WorkflowGenState
-            this.activeAgent = new SimpleWorkflowGeneratorAgent(env, this as AgentInfrastructure<WorkflowGenState>);
+            this.activeAgent = new AgenticCodingAgent(env, this as AgentInfrastructure<WorkflowGenState>);
         } else {
             // Safe cast: this is an app agent with CodeGenState
-            this.activeAgent = new SimpleCodeGeneratorAgent(env, this as AgentInfrastructure<CodeGenState>);
+            this.activeAgent = new PhasicCodingAgent(env, this as AgentInfrastructure<CodeGenState>);
         }
         
         if (this.onStartDeferred) {

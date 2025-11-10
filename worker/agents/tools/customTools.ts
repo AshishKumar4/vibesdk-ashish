@@ -22,6 +22,8 @@ import { createGetRuntimeErrorsTool } from './toolkit/get-runtime-errors';
 import { createWaitForGenerationTool } from './toolkit/wait-for-generation';
 import { createWaitForDebugTool } from './toolkit/wait-for-debug';
 import { createGitTool } from './toolkit/git';
+import { createConfigureWorkflowMetadataTool } from './toolkit/configure-workflow-metadata';
+import type { AgenticCodingAgent } from '../core/agenticCodingAgent';
 
 export async function executeToolWithDefinition<TArgs, TResult>(
     toolDef: ToolDefinition<TArgs, TResult>,
@@ -85,6 +87,13 @@ export function buildDebugTools(session: DebugSession, logger: StructuredLogger,
   if (session.agent.getProjectType() === 'app') {
     tools.push(
       createRegenerateFileTool(session.agent as IAppBuilderAgent, logger),
+    );
+  }
+  
+  // Add workflow-specific tools only for workflow agents
+  if (session.agent.getProjectType() === 'workflow') {
+    tools.push(
+      createConfigureWorkflowMetadataTool(session.agent as AgenticCodingAgent, logger),
     );
   }
 
